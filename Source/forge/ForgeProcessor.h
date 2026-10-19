@@ -7,6 +7,7 @@
 #include "ForgeEngine.h"
 #include "ForgeParameters.h"
 #include "ForgeRenderer.h"
+#include "ForgeMagic.h"
 
 class ForgeProcessor : public juce::AudioProcessor, private juce::ValueTree::Listener
 {
@@ -49,8 +50,10 @@ public:
     juce::String getMacroName (int macro) const;
     void setMacroName (int macro, const juce::String&);
 
-    // Message thread: loads a brand-new Magic Sound patch and returns its name.
-    juce::String makeMagicSound (const juce::String& style = {});
+    // Message thread: makes a brand-new Magic Sound patch in the background, loads it, then
+    // calls `done` with its name (empty if nothing passed the sound check).
+    void makeMagicSound (const juce::String& style, std::function<void (const juce::String&)> done);
+    bool isMakingMagic() const noexcept { return magicBusy.load(); }
 
     int getHitStep() const noexcept { return hitStep.load(); }
     float getLfoValue (int lfo) const noexcept { return renderer.getEngine().getLfoValue (lfo); }
@@ -84,7 +87,11 @@ private:
 
     std::array<Forge::LfoCurve, Forge::numLfos> curves;
     juce::Random magicRandom;
+    std::unique_ptr<ForgeMagic::Generator> magic; // built on first use, on the worker thread
+    std::atomic<bool> magicBusy { false };
     std::shared_ptr<bool> aliveToken = std::make_shared<bool> (true); // lets async callbacks see we're gone
+
+    juce::ThreadPool magicWorker { juce::ThreadPoolOptions{}.withNumberOfThreads (1).withThreadName ("Magic Sound") }; // last: stops first
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ForgeProcessor)
 };

@@ -119,7 +119,7 @@ juce_add_plugin(RiddimForge
 juce_add_binary_data(ForgeBinaryData
     HEADER_NAME ForgeBinaryData.h
     NAMESPACE ForgeBinaryData
-    SOURCES Presets/forge_factory.json)
+    SOURCES Presets/forge_factory.json Presets/magic_model.json Presets/magic_model.bin)
 
 set(FORGE_DSP_SOURCES
     Source/forge/ForgeEngine.cpp
@@ -128,7 +128,8 @@ set(FORGE_DSP_SOURCES
     Source/forge/ForgeRenderer.cpp
     Source/forge/ForgeParameters.cpp
     Source/forge/ForgePresets.cpp
-    Source/forge/ForgeMagic.cpp)
+    Source/forge/ForgeMagic.cpp
+    Source/forge/ForgeAudition.cpp)
 
 target_sources(RiddimForge PRIVATE
     ${FORGE_DSP_SOURCES}

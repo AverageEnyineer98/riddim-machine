@@ -254,7 +254,7 @@ ForgeUI::Knob::Knob (ForgeProcessor& p, const juce::String& paramID, const juce:
 
 void ForgeUI::Knob::updateReadout()
 {
-    value.setText (slider.getTextFromValue (slider.getValue()), juce::dontSendNotification);
+    value.setText (parameter->getCurrentValueAsText(), juce::dontSendNotification);
 }
 
 void ForgeUI::Knob::resized()

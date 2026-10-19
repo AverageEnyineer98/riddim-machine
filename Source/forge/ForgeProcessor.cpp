@@ -1,6 +1,5 @@
 #include "ForgeProcessor.h"
 #include "ForgeEditor.h"
-#include "ForgeMagic.h"
 #include "../Parameters.h"
 
 using Forge::ModDest;
@@ -126,11 +125,29 @@ bool ForgeProcessor::importWavetable (int oscillator, const juce::File& file, ju
     return true;
 }
 
-juce::String ForgeProcessor::makeMagicSound (const juce::String& style)
+void ForgeProcessor::makeMagicSound (const juce::String& style, std::function<void (const juce::String&)> done)
 {
-    const auto preset = ForgeMagic::generate (magicRandom, style);
-    presets.loadUnlisted (preset);
-    return preset.name;
+    if (magicBusy.exchange (true))
+        return;
+
+    magicWorker.addJob ([this, style, done = std::move (done), alive = std::weak_ptr<bool> (aliveToken)]
+    {
+        if (magic == nullptr)
+            magic = std::make_unique<ForgeMagic::Generator>();
+
+        auto preset = magic->isReady() ? magic->make (magicRandom, style) : FactoryPreset {};
+
+        juce::MessageManager::callAsync ([this, alive, preset = std::move (preset), done]
+        {
+            if (alive.expired())
+                return;
+            if (! preset.values.empty())
+                presets.loadUnlisted (preset);
+            magicBusy = false;
+            if (done)
+                done (preset.name);
+        });
+    });
 }
 
 void ForgeProcessor::setLfoCurve (int lfo, const Forge::LfoCurve& curve)

@@ -861,8 +861,18 @@ namespace
             magic.onClick = [this]
             {
                 const auto style = magicStyle.getSelectedItemIndex() <= 0 ? juce::String() : magicStyle.getText();
-                processor.makeMagicSound (style);
-                refresh();
+                magic.setEnabled (false);
+                magic.setButtonText ("MAKING...");
+                processor.makeMagicSound (style, [safe = juce::Component::SafePointer<Header> (this)] (const juce::String& made)
+                {
+                    if (safe == nullptr)
+                        return;
+                    safe->magic.setEnabled (true);
+                    safe->magic.setButtonText ("MAGIC SOUND");
+                    if (made.isEmpty())
+                        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Magic Sound", "No candidate passed the sound check this time. Try again.");
+                    safe->refresh();
+                });
             };
 
             magicStyle.addItemList (ForgeMagic::styles(), 1);

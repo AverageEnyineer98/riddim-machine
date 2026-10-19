@@ -568,6 +568,19 @@ def build(levels=None):
     return presets
 
 
+def build_training(count, seed):
+    """Extra presets from the same recipes with other seeds, as Magic Sound training data."""
+    rng = random.Random(seed)
+    weights = [family[2] for family in FAMILIES]
+    presets = []
+    for i in range(count):
+        category, recipe, _, words = rng.choices(FAMILIES, weights)[0]
+        preset = Preset(f"train {i}", category, random.Random(f"train-{seed}-{i}"))
+        recipe(preset.rng, preset)
+        presets.append(preset)
+    return presets
+
+
 def apply_levels(presets, path):
     """Sets each preset's output so it plays near the target loudness."""
     analysis = {item["name"]: item for item in json.loads(Path(path).read_text())}
@@ -584,9 +597,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--levels", help="ForgePresetLab analysis JSON to level-match the presets")
     parser.add_argument("--out", default=str(OUT))
+    parser.add_argument("--training", type=int, help="write this many training presets instead of the factory set")
+    parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args()
 
-    presets = build(args.levels)
+    presets = build_training(args.training, args.seed) if args.training else build(args.levels)
     Path(args.out).write_text(json.dumps([p.to_json() for p in presets], indent=1) + "\n")
     counts = {}
     for p in presets:
