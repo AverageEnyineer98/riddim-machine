@@ -35,27 +35,42 @@ Both build as VST3 and Standalone on Windows, macOS and Linux, plus AU on macOS.
 A second synth built around the tricks riddim producers use in big wavetable synths, written
 from scratch from publicly documented behaviour (no code or data from any other plugin).
 
-![forge](docs/riddim-forge-synth.png)
+![forge](docs/riddim-forge-v2-ui.png)
 
-- **Two warp slots per oscillator**, 17 modes: Sync, Sync Window, Bend +/-/+-, PWM,
-  Asym +/-/+-, Flip, Mirror, Quantize, FM / AM / RM from the other oscillator, FM from the sub.
-  The scope draws the frame through both warps, as it will play.
-- **Wavetable import**: WAV / AIFF / FLAC files of 2048-sample frames (the common wavetable
-  format; a `clm ` chunk naming another frame size is read too), up to 256 frames. Imported
-  tables are saved with the session by file path.
-- **Unison** up to 7 voices with detune, blend and width; sub on the fundamental or an octave down; noise.
-- **Filter**: low pass 12 / 24, band pass, high pass, notch, with drive and key tracking.
-- **Two envelopes, two LFOs, and an 8-slot mod matrix** (LFO 1, LFO 2, Env 2, velocity, note,
-  mod wheel into 17 destinations, including warp amounts and the FX chain's vowel).
-- **Hit sequencer**: up to 8 steps, each an LFO 1 rate. Every new note takes the next step, so a
-  plain MIDI clip plays the per-hit wobble changes riddim normally needs automation for. It
-  restarts from step 1 when the host transport starts.
-- **The riddim FX chain** (below) on the output.
-- Pages: **SYNTH** (oscillators, sub, filter, amp, voice), **MOD** (LFOs, envelope 2, hit
-  sequencer, matrix) and **FX**. 8 factory presets; user presets go to
-  `Documents/Riddim Machine/Forge Presets`.
+- **Three wavetable oscillators** plus sub and noise. Two warp slots per oscillator (sync,
+  bend, PWM, asym, flip, mirror, quantize, phase distortion and FM / AM / RM from another
+  oscillator). The wavetable display stacks the frames in 3D and draws the live, warped frame.
+- **Wavetable import**: WAV / AIFF / FLAC of 2048-sample frames (a `clm ` chunk naming another
+  frame size is read too). **+WAV** opens your own `Documents/Xfer/Serum Presets/Tables` folder
+  when it exists, so tables you own can be loaded; none are bundled.
+- **Two filters** (serial or parallel), with a live response curve.
+- **Three envelopes, four drawable LFOs** (drag points, double-click to add or remove, drag a
+  segment to bend it, shift to snap), **8 named macros** and a **16-slot mod matrix**.
+- **Drag-and-drop modulation**: drag a source's handle onto any knob. Rings on the knob show
+  the depth and a moving dot shows the live value; right-click a knob to change or remove it.
+- **Hit sequencer**: each new note takes the next LFO 1 rate, so a plain MIDI clip gets per-hit
+  wobble changes.
+- **FX rack**: hyper/dimension, distortion, formant, comb, smash, filter, EQ, frequency shift,
+  chorus, phaser, flanger, delay, reverb.
+- **347 factory presets** across 14 families (wobble, riddim, growl, tearout, yoi, screech,
+  metal, robot, reese, sub, lead, pad, pluck, FX), all original and level-matched. User presets
+  go to `Documents/Riddim Machine/Forge Presets`.
+- **3D view tailored to each preset**: a supershape whose form, spikes, twist, colours and
+  orbit rings come from the preset's own settings (and its name), reacting to notes and spectrum.
+- **Magic Sound**: a small neural network (conditional VAE trained only on our own presets,
+  `Tools/train_magic.py`) makes a new patch every click, optionally in a chosen style. Each
+  click plays five candidates offline, keeps the one closest to real presets of that family,
+  and levels it. Recent results are remembered so it never repeats.
 
-![forge mod](docs/riddim-forge-mod.png)
+### Preset pipeline
+
+    python3 Tools/make_forge_presets.py --out Presets/forge_factory.json
+    ForgePresetLab Presets/forge_factory.json lab.json        # render + measure every preset
+    python3 Tools/make_forge_presets.py --levels lab.json --out Presets/forge_factory.json
+    ForgePresetLab --magic 40 magic.json                      # test Magic Sound
+
+`ForgePresetLab` is built with `-DRIDDIM_BUILD_TESTS=ON`. Retraining Magic Sound is described
+at the top of `Tools/train_magic.py`.
 
 ## Riddim Machine FX (effect)
 
@@ -124,7 +139,7 @@ WAV next to the preset. Copy the preset into `Documents/Riddim Machine/Presets`.
 | --- | --- |
 | `Source/PluginProcessor.*`, `Source/PluginEditor.*` | The synth plugin |
 | `Source/fx/` | The FX plugin |
-| `Source/forge/` | Riddim Forge: engine, parameters, presets, UI |
+| `Source/forge/` | Riddim Forge: engine, parameters, presets, UI, 3D view, Magic Sound |
 | `Source/dsp/Wavetables.*` | Wavetable generation and band-limited playback |
 | `Source/dsp/RiddimEngine.*` | Voices, unison, FM, filter, envelopes, LFO, mono/glide |
 | `Source/dsp/RiddimFx.*` | The processing chain shared by both plugins |
@@ -136,6 +151,8 @@ WAV next to the preset. Copy the preset into `Documents/Riddim Machine/Presets`.
 | `Tests/RenderTest.cpp` | Offline render and sanity check |
 | `Tests/ForgeRenderTest.cpp` | The same for Riddim Forge, plus wavetable import |
 | `Tools/RiddimMatch.cpp` | Sound matching: reference clip to preset |
+| `Tools/make_forge_presets.py`, `Tools/ForgePresetLab.cpp` | Forge factory presets: generate, render, measure, level |
+| `Tools/train_magic.py` | Trains the Magic Sound model |
 
 ## Building
 
