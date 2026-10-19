@@ -1,0 +1,9 @@
+build/
+build-*/
+dist/
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+docs/audio/*.wav
