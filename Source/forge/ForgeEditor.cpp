@@ -863,7 +863,8 @@ namespace
                 const auto style = magicStyle.getSelectedItemIndex() <= 0 ? juce::String() : magicStyle.getText();
                 magic.setEnabled (false);
                 magic.setButtonText ("MAKING...");
-                processor.makeMagicSound (style, [safe = juce::Component::SafePointer<Header> (this)] (const juce::String& made)
+                juce::Component::SafePointer<Header> safe (this); // outside the capture list: MSVC misreads `this` there
+                processor.makeMagicSound (style, [safe] (const juce::String& made)
                 {
                     if (safe == nullptr)
                         return;
