@@ -182,6 +182,8 @@ namespace
                                      noiseCycle, tearoutScreech, chirpGrowl, warmSub };
 }
 
+constexpr int numGeneratedTables = (int) std::size (generators);
+
 const juce::StringArray& WavetableBank::getTableNames()
 {
     static const juce::StringArray names { "Riddim Sync Saw", "Growl FM", "Yoi Formant", "Tearout Fold",
@@ -197,15 +199,14 @@ const juce::StringArray& WavetableBank::getTableNames()
 WavetableBank::WavetableBank()
 {
     // Tables are independent, so build them on every core; startup is otherwise seconds long.
-    constexpr auto numTables = (int) std::size (generators);
-    tables.resize ((size_t) numTables);
+    tables.resize ((size_t) numGeneratedTables);
     std::atomic<int> next { 0 };
 
     auto work = [this, &next]
     {
         std::vector<float> raw ((size_t) (numFrames * frameSize));
 
-        for (int t = next++; t < numTables; t = next++)
+        for (int t = next++; t < numGeneratedTables; t = next++)
         {
             const auto generator = generators[t];
             for (int frame = 0; frame < numFrames; ++frame)
