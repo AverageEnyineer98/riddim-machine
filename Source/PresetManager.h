@@ -14,6 +14,9 @@ const std::vector<FactoryPreset>& synthFactoryPresets();
 const std::vector<FactoryPreset>& fxFactoryPresets();
 const std::vector<FactoryPreset>& forgeFactoryPresets();
 
+// Reads presets in the forge_factory.json layout (used by the plugin and the preset tools).
+std::vector<FactoryPreset> parseForgePresets (const juce::String& json);
+
 // Factory presets built into the plugin, plus user presets saved as .rmpreset
 // files in Documents/Riddim Machine/<folder>. The list is factory first, then user.
 class PresetManager

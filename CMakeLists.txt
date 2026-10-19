@@ -59,6 +59,7 @@ endfunction()
 juce_add_plugin(RiddimMachine
     COMPANY_NAME "Riddim Machine"
     PRODUCT_NAME "Riddim Machine"
+    BUNDLE_ID com.riddimmachine.riddimmachine
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT FALSE
@@ -80,6 +81,7 @@ riddim_configure(RiddimMachine)
 juce_add_plugin(RiddimMachineFX
     COMPANY_NAME "Riddim Machine"
     PRODUCT_NAME "Riddim Machine FX"
+    BUNDLE_ID com.riddimmachine.riddimmachinefx
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
@@ -165,6 +167,23 @@ if(RIDDIM_BUILD_TESTS)
         Source/dsp/Wavetables.cpp)
     target_compile_definitions(ForgeRenderTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(ForgeRenderTest PRIVATE
+        ForgeBinaryData
+        juce::juce_audio_formats juce::juce_audio_processors juce::juce_dsp juce::juce_gui_basics
+        juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # Renders and measures Forge presets (levels the factory set, feeds Magic Sound training).
+    juce_add_console_app(ForgePresetLab PRODUCT_NAME "ForgePresetLab")
+    target_sources(ForgePresetLab PRIVATE
+        Tools/ForgePresetLab.cpp
+        ${FORGE_DSP_SOURCES}
+        Source/Parameters.cpp
+        Source/PresetManager.cpp
+        Source/FactoryPresets.cpp
+        Source/dsp/RiddimEngine.cpp
+        Source/dsp/RiddimFx.cpp
+        Source/dsp/Wavetables.cpp)
+    target_compile_definitions(ForgePresetLab PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(ForgePresetLab PRIVATE
         ForgeBinaryData
         juce::juce_audio_formats juce::juce_audio_processors juce::juce_dsp juce::juce_gui_basics
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
