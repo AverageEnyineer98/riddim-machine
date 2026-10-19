@@ -306,7 +306,7 @@ namespace
             if (juce::String (id) == "clm ")
             {
                 juce::MemoryBlock data;
-                in.readIntoMemoryBlock (data, (juce::int64) juce::jmin<juce::int64> (size, 64));
+                in.readIntoMemoryBlock (data, std::min (size, (juce::int64) 64));
                 const auto text = data.toString();
                 if (text.startsWith ("<!>"))
                     return text.substring (3).getIntValue();
