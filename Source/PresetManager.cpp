@@ -43,7 +43,23 @@ juce::String PresetManager::getCategory (int index) const
 
 juce::String PresetManager::getCurrentName() const
 {
-    return getPresetNames()[currentIndex];
+    return customName.isNotEmpty() ? customName : getPresetNames()[currentIndex];
+}
+
+void PresetManager::loadUnlisted (const FactoryPreset& preset)
+{
+    if (onBeforeLoad)
+        onBeforeLoad();
+    resetToDefaults();
+
+    for (const auto& [id, value] : preset.values)
+        if (auto* p = state.getParameter (id))
+            p->setValueNotifyingHost (p->convertTo0to1 (value));
+
+    for (const auto& [key, text] : preset.text)
+        state.state.setProperty (juce::Identifier (key), text, nullptr);
+
+    setCustomName (preset.name);
 }
 
 void PresetManager::resetToDefaults()
@@ -102,6 +118,7 @@ void PresetManager::loadPreset (int index)
     }
 
     currentIndex = index;
+    customName = {};
 }
 
 void PresetManager::saveUserPreset (const juce::String& name)
@@ -124,5 +141,12 @@ void PresetManager::setCurrentIndexFromName (const juce::String& name)
 {
     const auto index = getPresetNames().indexOf (name);
     if (index >= 0)
+    {
         currentIndex = index;
+        customName = {};
+    }
+    else if (name.isNotEmpty())
+    {
+        setCustomName (name);
+    }
 }

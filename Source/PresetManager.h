@@ -29,8 +29,13 @@ public:
     juce::String getCurrentName() const;
 
     void loadPreset (int index);
+
+    // Loads a sound that isn't in the list (e.g. one Magic Sound made). It shows under its own
+    // name until another preset loads or it is saved.
+    void loadUnlisted (const FactoryPreset&);
+    void setCustomName (const juce::String& name) { customName = name; currentIndex = -1; }
     void loadNext()     { loadPreset ((currentIndex + 1) % getPresetNames().size()); }
-    void loadPrevious() { const auto n = getPresetNames().size(); loadPreset ((currentIndex + n - 1) % n); }
+    void loadPrevious() { const auto n = getPresetNames().size(); loadPreset ((juce::jmax (0, currentIndex) + n - 1) % n); }
 
     // Saves the current sound as a user preset and selects it.
     void saveUserPreset (const juce::String& name);
@@ -53,4 +58,5 @@ private:
     juce::String folderName;
     juce::Array<juce::File> userPresets;
     int currentIndex = 0;
+    juce::String customName;
 };

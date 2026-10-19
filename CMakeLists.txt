@@ -125,11 +125,13 @@ set(FORGE_DSP_SOURCES
     Source/forge/ForgeRack.cpp
     Source/forge/ForgeRenderer.cpp
     Source/forge/ForgeParameters.cpp
-    Source/forge/ForgePresets.cpp)
+    Source/forge/ForgePresets.cpp
+    Source/forge/ForgeMagic.cpp)
 
 target_sources(RiddimForge PRIVATE
     ${FORGE_DSP_SOURCES}
     Source/forge/ForgeUI.cpp
+    Source/forge/ForgeVisual.cpp
     Source/forge/ForgeProcessor.cpp
     Source/forge/ForgeEditor.cpp
     ${RIDDIM_SHARED_SOURCES})

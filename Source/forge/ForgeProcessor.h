@@ -49,6 +49,9 @@ public:
     juce::String getMacroName (int macro) const;
     void setMacroName (int macro, const juce::String&);
 
+    // Message thread: loads a brand-new Magic Sound patch and returns its name.
+    juce::String makeMagicSound (const juce::String& style = {});
+
     int getHitStep() const noexcept { return hitStep.load(); }
     float getLfoValue (int lfo) const noexcept { return renderer.getEngine().getLfoValue (lfo); }
     float getLfoPhase (int lfo) const noexcept { return renderer.getEngine().getLfoPhase (lfo); }
@@ -80,6 +83,8 @@ private:
     const UserWavetable* imported[Forge::numOscs] {};
 
     std::array<Forge::LfoCurve, Forge::numLfos> curves;
+    juce::Random magicRandom;
+    std::shared_ptr<bool> aliveToken = std::make_shared<bool> (true); // lets async callbacks see we're gone
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ForgeProcessor)
 };

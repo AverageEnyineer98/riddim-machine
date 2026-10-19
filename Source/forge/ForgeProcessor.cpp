@@ -1,5 +1,6 @@
 #include "ForgeProcessor.h"
 #include "ForgeEditor.h"
+#include "ForgeMagic.h"
 #include "../Parameters.h"
 
 using Forge::ModDest;
@@ -125,6 +126,13 @@ bool ForgeProcessor::importWavetable (int oscillator, const juce::File& file, ju
     return true;
 }
 
+juce::String ForgeProcessor::makeMagicSound (const juce::String& style)
+{
+    const auto preset = ForgeMagic::generate (magicRandom, style);
+    presets.loadUnlisted (preset);
+    return preset.name;
+}
+
 void ForgeProcessor::setLfoCurve (int lfo, const Forge::LfoCurve& curve)
 {
     parameters.state.setProperty (ForgeID::lfoCurveProperty (lfo), curve.toString(), nullptr);
@@ -175,18 +183,17 @@ void ForgeProcessor::valueTreePropertyChanged (juce::ValueTree& tree, const juce
             && juce::MessageManager::getInstance()->isThisTheMessageThread())
             onTextStateChanged();
         else
-            juce::MessageManager::callAsync ([safe = juce::WeakReference<juce::AudioProcessor> (this)]
+            juce::MessageManager::callAsync ([this, alive = std::weak_ptr<bool> (aliveToken)]
             {
-                if (auto* p = dynamic_cast<ForgeProcessor*> (safe.get()))
-                    if (p->onTextStateChanged)
-                        p->onTextStateChanged();
+                if (! alive.expired() && onTextStateChanged)
+                    onTextStateChanged();
             });
     }
 }
 
 //==============================================================================
 int ForgeProcessor::getNumPrograms()                      { return juce::jmax (1, presets.getPresetNames().size()); }
-int ForgeProcessor::getCurrentProgram()                   { return presets.getCurrentIndex(); }
+int ForgeProcessor::getCurrentProgram()                   { return juce::jmax (0, presets.getCurrentIndex()); }
 const juce::String ForgeProcessor::getProgramName (int i) { return presets.getPresetNames()[i]; }
 void ForgeProcessor::setCurrentProgram (int index)        { presets.loadPreset (index); }
 
