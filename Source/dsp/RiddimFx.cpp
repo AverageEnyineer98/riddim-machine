@@ -264,6 +264,14 @@ void RiddimFx::distort (juce::dsp::Oversampling<float>& oversampling, juce::dsp:
                 case 0:  wet = std::tanh (dry * drive); break;
                 case 1:  wet = juce::jlimit (-1.0f, 1.0f, dry * drive); break;
                 case 2:  wet = fold (dry * drive); break;
+                case 4:  wet = dry >= 0.0f ? 1.0f - std::exp (-dry * drive) : -0.3f * (1.0f - std::exp (dry * drive)); break; // Diode: rectifier-like
+                case 5:  wet = std::tanh (dry * drive + 0.35f * amount) - std::tanh (0.35f * amount); break;                   // Asym: offset bias
+                case 6:  wet = std::sin (dry * drive * 0.5f); break;                                                           // Sine shaper
+                case 7:  { const auto x = juce::jlimit (-1.5f, 1.5f, dry * drive * 0.4f);                                      // X-shaper: two-stage cubic
+                           const auto y = 1.5f * x - 0.5f * x * x * x;
+                           wet = juce::jlimit (-1.0f, 1.0f, 1.5f * y - 0.5f * y * y * y); break; }
+                case 8:  { const auto x = dry * drive;                                                                         // Tube: soft, asymmetric
+                           wet = x >= 0.0f ? std::tanh (x) : std::tanh (x * 0.7f) / 0.85f; break; }
                 default:
                 {
                     // Bitcrush: sample-and-hold then quantise.

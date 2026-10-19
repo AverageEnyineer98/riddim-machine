@@ -1,6 +1,5 @@
 #include "ForgeEngine.h"
 #include "../dsp/RiddimEngine.h" // lfoShapeValue
-#include "../Parameters.h"       // LFO rates
 
 using namespace Forge;
 
@@ -8,6 +7,7 @@ namespace
 {
     constexpr int controlInterval = 16; // samples between modulation updates
     constexpr double twoPi = juce::MathConstants<double>::twoPi;
+    constexpr double pi = juce::MathConstants<double>::pi;
 
     inline double wrap (double p) { return p - std::floor (p); }
     inline double semitonesToRatio (double semis) { return std::exp2 (semis / 12.0); }
@@ -28,8 +28,11 @@ namespace
 
     // Bipolar amount (0.5 = untouched) as -1..1.
     inline double bipolar (float amount) { return juce::jlimit (-1.0, 1.0, (amount - 0.5) * 2.0); }
+
+    constexpr int numBuiltInLfoShapes = 11;
 }
 
+//==============================================================================
 WarpResult Forge::warpPhase (Warp mode, float amount, double p, float other, float sub)
 {
     const auto a = (double) juce::jlimit (0.0f, 1.0f, amount);
@@ -40,7 +43,7 @@ WarpResult Forge::warpPhase (Warp mode, float amount, double p, float other, flo
         case Warp::syncWindow:
         {
             // Sync with a fade over the original cycle, so the reset click turns into a vowel-ish tone.
-            const auto window = std::sin (juce::MathConstants<double>::pi * p);
+            const auto window = std::sin (pi * p);
             return { wrap (p * (1.0 + a * 15.0)), (float) (1.0 - juce::jmin (1.0, a * 4.0) * (1.0 - window)) };
         }
         case Warp::bendPlus:      return { bend (p, 1.0 + a * 4.0) };
@@ -65,6 +68,9 @@ WarpResult Forge::warpPhase (Warp mode, float amount, double p, float other, flo
         case Warp::amOther:       return { p, (float) (1.0 - a + a * (0.5 + 0.5 * other)) };
         case Warp::rmOther:       return { p, (float) (1.0 - a + a * other) };
         case Warp::fmSub:         return { wrap (p + a * a * 3.0 * sub) };
+        // Phase distortion whose knee follows the source: the wave's halves stretch and squeeze
+        // at the source's rate, the vocal growl most riddim patches are built on.
+        case Warp::pdOther:       return { asym (p, juce::jlimit (0.03, 0.97, 0.5 + 0.47 * a * (double) other)) };
         case Warp::off:
         case Warp::count:         break;
     }
@@ -87,6 +93,7 @@ double Forge::warpBrightness (Warp mode, float amount)
         case Warp::asymPlus:
         case Warp::asymMinus:
         case Warp::asymPlusMinus: return 1.0 + a * 3.0;
+        case Warp::pdOther:       return 1.0 + a * 8.0;
         case Warp::quantize:      return 64.0;
         case Warp::fmOther:
         case Warp::fmSub:         return 1.0 + a * 6.0;
@@ -101,42 +108,204 @@ double Forge::warpBrightness (Warp mode, float amount)
     return 1.0;
 }
 
+float Forge::builtInLfoShape (int shape, double phase)
+{
+    const auto p = wrap (phase);
+
+    switch (shape)
+    {
+        case 8:  return (float) (0.5 + 0.5 * std::cos (twoPi * p));           // Dip: full, down, back up
+        case 9:  return p < 0.75 ? 1.0f : 0.0f;                                // Chop 3/4
+        case 10: return (float) std::pow (1.0 - p, 3.0);                       // Exp down
+        default: return lfoShapeValue (shape, p);
+    }
+}
+
+//==============================================================================
+float LfoCurve::evaluate (float x) const
+{
+    if (points.empty())
+        return 0.0f;
+
+    x = juce::jlimit (0.0f, 1.0f, x);
+
+    for (size_t i = 0; i + 1 < points.size(); ++i)
+    {
+        const auto& a = points[i];
+        const auto& b = points[i + 1];
+        if (x <= b.x)
+        {
+            const auto span = b.x - a.x;
+            auto t = span > 1.0e-6f ? (x - a.x) / span : 1.0f;
+            if (a.curve > 0.0f)
+                t = std::pow (t, 1.0f + a.curve * 7.0f);
+            else if (a.curve < 0.0f)
+                t = 1.0f - std::pow (1.0f - t, 1.0f - a.curve * 7.0f);
+            return a.y + (b.y - a.y) * t;
+        }
+    }
+
+    return points.back().y;
+}
+
+void LfoCurve::render (float* table, int size) const
+{
+    for (int i = 0; i < size; ++i)
+        table[i] = evaluate ((float) i / (float) size);
+}
+
+juce::String LfoCurve::toString() const
+{
+    juce::StringArray parts;
+    for (const auto& p : points)
+        parts.add (juce::String (p.x, 4) + "," + juce::String (p.y, 4) + "," + juce::String (p.curve, 3));
+    return parts.joinIntoString (";");
+}
+
+LfoCurve LfoCurve::fromString (const juce::String& text)
+{
+    LfoCurve curve;
+    curve.points.clear();
+
+    for (const auto& part : juce::StringArray::fromTokens (text, ";", {}))
+    {
+        const auto values = juce::StringArray::fromTokens (part, ",", {});
+        if (values.size() >= 2)
+            curve.points.push_back ({ juce::jlimit (0.0f, 1.0f, values[0].getFloatValue()),
+                                      juce::jlimit (0.0f, 1.0f, values[1].getFloatValue()),
+                                      values.size() > 2 ? juce::jlimit (-1.0f, 1.0f, values[2].getFloatValue()) : 0.0f });
+    }
+
+    std::sort (curve.points.begin(), curve.points.end(), [] (const Point& a, const Point& b) { return a.x < b.x; });
+
+    if (curve.points.size() < 2)
+        return LfoCurve();
+
+    curve.points.front().x = 0.0f;
+    curve.points.back().x = 1.0f;
+    return curve;
+}
+
+LfoCurve LfoCurve::fromShape (int shape)
+{
+    LfoCurve curve;
+
+    switch (shape)
+    {
+        case 0:  curve.points = { { 0, 0, -0.35f }, { 0.25f, 0.5f, 0.35f }, { 0.5f, 1, -0.35f }, { 0.75f, 0.5f, 0.35f }, { 1, 0, 0 } }; break;
+        case 1:  curve.points = { { 0, 0, 0 }, { 0.5f, 1, 0 }, { 1, 0, 0 } }; break;
+        case 2:  curve.points = { { 0, 1, 0 }, { 1, 0, 0 } }; break;
+        case 3:  curve.points = { { 0, 0, 0 }, { 1, 1, 0 } }; break;
+        case 4:  curve.points = { { 0, 1, 0 }, { 0.5f, 1, 0 }, { 0.5f, 0, 0 }, { 1, 0, 0 } }; break;
+        case 8:  curve.points = { { 0, 1, -0.4f }, { 0.5f, 0, 0.4f }, { 1, 1, 0 } }; break;
+        case 9:  curve.points = { { 0, 1, 0 }, { 0.75f, 1, 0 }, { 0.75f, 0, 0 }, { 1, 0, 0 } }; break;
+        case 10: curve.points = { { 0, 1, 0.6f }, { 1, 0, 0 } }; break;
+        default:
+        {
+            // Sample anything else into straight segments.
+            curve.points.clear();
+            constexpr int n = 32;
+            for (int i = 0; i <= n; ++i)
+                curve.points.push_back ({ (float) i / n, builtInLfoShape (shape, (double) i / n - (i == n ? 1.0e-6 : 0.0)), 0.0f });
+            break;
+        }
+    }
+
+    return curve;
+}
+
+//==============================================================================
 const juce::StringArray& Forge::warpNames()
 {
     static const juce::StringArray names { "Off", "Sync", "Sync Window", "Bend +", "Bend -", "Bend +/-", "PWM",
                                            "Asym +", "Asym -", "Asym +/-", "Flip", "Mirror", "Quantize",
-                                           "FM (other)", "AM (other)", "RM (other)", "FM (sub)" };
+                                           "FM (src)", "AM (src)", "RM (src)", "FM (sub)", "PD (src)" };
+    return names;
+}
+
+const juce::StringArray& Forge::warpSourceNames()
+{
+    static const juce::StringArray names { "Osc A", "Osc B", "Osc C", "Sub", "Noise" };
     return names;
 }
 
 const juce::StringArray& Forge::modSourceNames()
 {
-    static const juce::StringArray names { "-", "LFO 1", "LFO 2", "Env 2", "Velocity", "Note", "Mod Wheel" };
+    static const juce::StringArray names { "-", "LFO 1", "LFO 2", "LFO 3", "LFO 4", "Env 2", "Env 3", "Amp Env",
+                                           "Macro 1", "Macro 2", "Macro 3", "Macro 4", "Macro 5", "Macro 6", "Macro 7", "Macro 8",
+                                           "Velocity", "Note", "Mod Wheel", "Aftertouch", "Random" };
     return names;
 }
 
 const juce::StringArray& Forge::modDestNames()
 {
-    static const juce::StringArray names { "-", "A Position", "A Warp 1", "A Warp 2", "A Level", "A Pitch",
-                                           "B Position", "B Warp 1", "B Warp 2", "B Level", "B Pitch",
-                                           "Sub Level", "Noise", "Cutoff", "Resonance", "Drive", "Volume", "FX Vowel" };
+    static const juce::StringArray names {
+        "-",
+        "A Position", "A Warp 1", "A Warp 2", "A Level", "A Pitch", "A Pan", "A Detune",
+        "B Position", "B Warp 1", "B Warp 2", "B Level", "B Pitch", "B Pan", "B Detune",
+        "C Position", "C Warp 1", "C Warp 2", "C Level", "C Pitch", "C Pan", "C Detune",
+        "Sub Level", "Noise Level", "Noise Colour",
+        "F1 Cutoff", "F1 Resonance", "F1 Drive", "F1 Var", "F1 Mix",
+        "F2 Cutoff", "F2 Resonance", "F2 Drive", "F2 Var", "F2 Mix",
+        "Volume", "Master Pitch", "Pitch Env",
+        "LFO 1 Rate", "LFO 2 Rate", "LFO 3 Rate", "LFO 4 Rate",
+        "FX Vowel", "Dist Drive", "Dist Mix", "Comb Mix", "Smash", "Heat",
+        "FX Filter Cutoff", "FX Filter Res", "FX Filter Mix", "EQ Gain 1", "EQ Gain 2", "EQ Freq 1", "EQ Freq 2",
+        "Shift Amount", "Shift Mix", "Hyper Mix", "Dimension Mix", "Chorus Mix", "Phaser Mix", "Flanger Mix",
+        "Delay Mix", "Reverb Mix" };
+    jassert (names.size() == (int) ModDest::count);
     return names;
 }
 
-const juce::StringArray& Forge::filterTypeNames()
+const juce::StringArray& Forge::routeNames()
 {
-    static const juce::StringArray names { "Low Pass 12", "Low Pass 24", "Band Pass", "High Pass", "Notch" };
+    static const juce::StringArray names { "Filter 1", "Filter 2", "Both", "Direct" };
+    return names;
+}
+
+const juce::StringArray& Forge::lfoShapeNames()
+{
+    static const juce::StringArray names { "Sine", "Triangle", "Saw Down", "Saw Up", "Square", "Riddim Step",
+                                           "Half Wob", "Stutter", "Dip", "Chop 3/4", "Exp Down", "Custom" };
+    return names;
+}
+
+const juce::StringArray& Forge::lfoModeNames()
+{
+    static const juce::StringArray names { "Trigger", "Envelope", "Free" };
+    return names;
+}
+
+const juce::StringArray& Forge::lfoRateNames()
+{
+    static const juce::StringArray names { "8/1", "4/1", "2/1", "1/1", "1/2", "1/2T", "1/4.", "1/4", "1/4T", "1/8.",
+                                           "1/8", "1/8T", "1/16.", "1/16", "1/16T", "1/32", "1/32T", "1/64" };
+    return names;
+}
+
+const double* Forge::lfoRateCyclesPerBeat()
+{
+    static const double rates[] { 1.0 / 32.0, 1.0 / 16.0, 0.125, 0.25, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 4.0 / 3.0,
+                                  2.0, 3.0, 8.0 / 3.0, 4.0, 6.0, 8.0, 12.0, 16.0 };
+    return rates;
+}
+
+const juce::StringArray& Forge::noiseTypeNames()
+{
+    static const juce::StringArray names { "White", "Pink", "Brown", "Hum", "Crackle", "Digital", "Metal" };
+    return names;
+}
+
+const juce::StringArray& Forge::subShapeNames()
+{
+    static const juce::StringArray names { "Sine", "Triangle", "Saw", "Square" };
     return names;
 }
 
 //==============================================================================
 ForgeEngine::ForgeEngine()
 {
-    for (auto& v : voices)
-    {
-        v.amp.setSampleRate (sampleRate);
-        v.env2.setSampleRate (sampleRate / controlInterval);
-    }
+    prepare (sampleRate, 512);
 }
 
 void ForgeEngine::prepare (double newSampleRate, int maxBlockSize)
@@ -146,11 +315,15 @@ void ForgeEngine::prepare (double newSampleRate, int maxBlockSize)
     for (auto& v : voices)
     {
         v.amp.setSampleRate (sampleRate);
-        v.env2.setSampleRate (sampleRate / controlInterval);
+        for (auto& e : v.env)
+            e.setSampleRate (sampleRate / controlInterval);
+        for (auto& filter : v.filters)
+            for (auto& side : filter)
+                side.prepare (sampleRate);
     }
 
     voiceBuffer.setSize (2, maxBlockSize);
-    vowelTrace.assign ((size_t) maxBlockSize, 0.0f);
+    fxTraces.assign ((size_t) numFxDests, std::vector<float> ((size_t) maxBlockSize, 0.0f));
     reset();
 }
 
@@ -161,12 +334,37 @@ void ForgeEngine::reset()
         v.active = false;
         v.note = -1;
         v.amp.reset();
-        v.env2.reset();
+        for (auto& e : v.env)
+            e.reset();
     }
 
     heldNotes.clear();
     bendSemitones = 0.0f;
     hitStep = -1;
+}
+
+int ForgeEngine::getNumActiveVoices() const noexcept
+{
+    int n = 0;
+    for (const auto& v : voices)
+        n += v.active ? 1 : 0;
+    return n;
+}
+
+float ForgeEngine::lfoValue (const Settings::Lfo& lfo, int index, double phase) const
+{
+    if (lfo.shape >= numBuiltInLfoShapes)
+        if (const auto* table = lfoTables[index].load())
+        {
+            const auto position = wrap (phase) * lfoTableSize;
+            const auto i0 = (int) position;
+            const auto frac = (float) (position - i0);
+            const auto a = table[i0 & (lfoTableSize - 1)];
+            const auto b = table[(i0 + 1) & (lfoTableSize - 1)];
+            return a + frac * (b - a);
+        }
+
+    return builtInLfoShape (juce::jmin (lfo.shape, numBuiltInLfoShapes - 1), phase);
 }
 
 void ForgeEngine::process (juce::AudioBuffer<float>& buffer, const juce::MidiBuffer& midi, const Settings& s,
@@ -177,25 +375,56 @@ void ForgeEngine::process (juce::AudioBuffer<float>& buffer, const juce::MidiBuf
 
     if (voiceBuffer.getNumSamples() < numSamples)
         voiceBuffer.setSize (2, numSamples, false, false, true);
-    if ((int) vowelTrace.size() < numSamples)
-        vowelTrace.resize ((size_t) numSamples);
+    for (auto& trace : fxTraces)
+        if ((int) trace.size() < numSamples)
+            trace.resize ((size_t) numSamples);
 
     voiceBuffer.clear();
-    std::fill_n (vowelTrace.begin(), numSamples, 0.0f);
-
     bpm = juce::jmax (20.0, bpm);
+
+    // Effects modulated only by macros, the mod wheel or aftertouch still move with no notes held.
+    {
+        float sources[(int) ModSource::count] {};
+        for (int m = 0; m < numMacros; ++m)
+            sources[(int) ModSource::macro1 + m] = s.macros[m];
+        sources[(int) ModSource::modWheel] = modWheel;
+        sources[(int) ModSource::aftertouch] = aftertouch;
+
+        float fxMod[numFxDests] {};
+        for (const auto& slot : s.slots)
+        {
+            const auto d = (int) slot.dest - firstFxDest;
+            if (d < 0 || slot.source == ModSource::none)
+                continue;
+            auto value = sources[(int) slot.source];
+            if (slot.bipolar) value = value * 2.0f - 1.0f;
+            if (slot.aux != ModSource::none) value *= sources[(int) slot.aux];
+            fxMod[d] += value * slot.amount;
+        }
+
+        for (int d = 0; d < numFxDests; ++d)
+            std::fill_n (fxTraces[(size_t) d].begin(), numSamples, fxMod[d]);
+    }
 
     for (auto& v : voices)
     {
         v.amp.setParameters ({ s.attackMs * 0.001f, s.decayMs * 0.001f, s.sustain, s.releaseMs * 0.001f });
-        v.env2.setParameters ({ s.env2AttackMs * 0.001f, s.env2DecayMs * 0.001f, s.env2Sustain, s.env2ReleaseMs * 0.001f });
+        for (int e = 0; e < 2; ++e)
+            v.env[e].setParameters ({ s.envAttackMs[e] * 0.001f, s.envDecayMs[e] * 0.001f, s.envSustain[e], s.envReleaseMs[e] * 0.001f });
     }
 
-    // Free-running LFOs lock to the host bar while the transport plays.
-    for (int l = 0; l < 2; ++l)
-        if (ppqPosition.has_value() && ! s.lfo[l].retrigger)
-            freeLfoPhase[l] = wrap (*ppqPosition * Choices::lfoCyclesPerBeat[s.lfo[l].rate]);
+    // Free LFOs: tempo-synced ones lock to the host bar while the transport plays.
+    double freeHz[numLfos];
+    for (int l = 0; l < numLfos; ++l)
+    {
+        const auto& lfo = s.lfo[l];
+        freeHz[l] = lfo.sync ? lfoRateCyclesPerBeat()[juce::jlimit (0, lfoRateNames().size() - 1, lfo.rate)] * bpm / 60.0 : lfo.hz;
+        if (ppqPosition.has_value() && lfo.mode == LfoMode::free && lfo.sync)
+            freeLfoPhase[l] = wrap (*ppqPosition * lfoRateCyclesPerBeat()[juce::jlimit (0, lfoRateNames().size() - 1, lfo.rate)]);
+    }
 
+    // The newest voice's modulation is traced for the global effects.
+    const Voice* traced = nullptr;
     int position = 0;
 
     auto renderUpTo = [&] (int end)
@@ -203,8 +432,7 @@ void ForgeEngine::process (juce::AudioBuffer<float>& buffer, const juce::MidiBuf
         if (end <= position)
             return;
 
-        // The newest voice's vowel modulation is traced for the FX chain's formant.
-        Voice* traced = nullptr;
+        traced = nullptr;
         for (auto& v : voices)
             if (v.active && (traced == nullptr || v.startedAt > traced->startedAt))
                 traced = &v;
@@ -212,7 +440,7 @@ void ForgeEngine::process (juce::AudioBuffer<float>& buffer, const juce::MidiBuf
         for (auto& v : voices)
             if (v.active)
                 renderVoice (v, voiceBuffer.getWritePointer (0, position), voiceBuffer.getWritePointer (1, position),
-                             &v == traced ? vowelTrace.data() + position : nullptr, end - position, s, bpm);
+                             position, end - position, s, bpm, &v == traced);
         position = end;
     };
 
@@ -224,8 +452,8 @@ void ForgeEngine::process (juce::AudioBuffer<float>& buffer, const juce::MidiBuf
 
     renderUpTo (numSamples);
 
-    for (int l = 0; l < 2; ++l)
-        freeLfoPhase[l] = wrap (freeLfoPhase[l] + Choices::lfoCyclesPerBeat[s.lfo[l].rate] * bpm / 60.0 * numSamples / sampleRate);
+    for (int l = 0; l < numLfos; ++l)
+        freeLfoPhase[l] = wrap (freeLfoPhase[l] + freeHz[l] * numSamples / sampleRate);
 
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (buffer.getNumChannels() > 1 ? 1 : 0);
@@ -240,9 +468,15 @@ void ForgeEngine::process (juce::AudioBuffer<float>& buffer, const juce::MidiBuf
         if (v.active && (newest == nullptr || v.startedAt > newest->startedAt))
             newest = &v;
 
-    lastLfoPhase = (float) (newest != nullptr && s.lfo[0].retrigger ? newest->lfoPhase[0] : freeLfoPhase[0]);
+    for (int l = 0; l < numLfos; ++l)
+    {
+        const auto phase = newest != nullptr && s.lfo[l].mode != LfoMode::free ? newest->lfoPhase[l] : freeLfoPhase[l];
+        lastLfoPhase[l] = (float) phase;
+        lastLfoValue[l] = newest != nullptr ? newest->lfoSmoothed[l] : lfoValue (s.lfo[l], l, phase);
+    }
+
     if (newest != nullptr)
-        currentHz = newest->hz * semitonesToRatio (bendSemitones);
+        currentHz = newest->hz * semitonesToRatio (bendSemitones + s.masterTune);
 }
 
 //==============================================================================
@@ -256,6 +490,8 @@ void ForgeEngine::handleMidi (const juce::MidiMessage& msg, const Settings& s)
         bendSemitones = (float) (msg.getPitchWheelValue() - 8192) / 8192.0f * (float) s.bendRange;
     else if (msg.isControllerOfType (1))
         modWheel = (float) msg.getControllerValue() / 127.0f;
+    else if (msg.isChannelPressure())
+        aftertouch = (float) msg.getChannelPressureValue() / 127.0f;
     else if (msg.isAllNotesOff() || msg.isAllSoundOff())
     {
         heldNotes.clear();
@@ -263,7 +499,8 @@ void ForgeEngine::handleMidi (const juce::MidiMessage& msg, const Settings& s)
         for (auto& v : voices)
         {
             v.amp.noteOff();
-            v.env2.noteOff();
+            for (auto& e : v.env)
+                e.noteOff();
         }
     }
 }
@@ -280,20 +517,22 @@ void ForgeEngine::noteOn (int note, float velocity, const Settings& s)
         for (size_t i = 1; i < voices.size(); ++i)
             voices[i].amp.noteOff();
 
-        startVoice (v, note, velocity, ! (wasHolding && v.active), s);
+        // Legato: overlapping notes glide without restarting the envelopes.
+        startVoice (v, note, velocity, ! (s.legato && wasHolding && v.active), s);
         return;
     }
 
+    const auto limit = juce::jlimit (1, maxVoices, s.polyphony);
     Voice* target = nullptr;
-    for (auto& v : voices)
-        if (! v.active) { target = &v; break; }
+    for (int i = 0; i < limit; ++i)
+        if (! voices[(size_t) i].active) { target = &voices[(size_t) i]; break; }
 
     if (target == nullptr)
     {
         target = &voices[0];
-        for (auto& v : voices)
-            if (v.startedAt < target->startedAt)
-                target = &v;
+        for (int i = 0; i < limit; ++i)
+            if (voices[(size_t) i].startedAt < target->startedAt)
+                target = &voices[(size_t) i];
     }
 
     startVoice (*target, note, velocity, true, s);
@@ -302,6 +541,13 @@ void ForgeEngine::noteOn (int note, float velocity, const Settings& s)
 void ForgeEngine::noteOff (int note, const Settings& s)
 {
     heldNotes.erase (std::remove (heldNotes.begin(), heldNotes.end(), note), heldNotes.end());
+
+    auto release = [] (Voice& v)
+    {
+        v.amp.noteOff();
+        for (auto& e : v.env)
+            e.noteOff();
+    };
 
     if (s.mono)
     {
@@ -318,18 +564,14 @@ void ForgeEngine::noteOff (int note, const Settings& s)
         }
         else
         {
-            v.amp.noteOff();
-            v.env2.noteOff();
+            release (v);
         }
         return;
     }
 
     for (auto& v : voices)
         if (v.active && v.note == note)
-        {
-            v.amp.noteOff();
-            v.env2.noteOff();
-        }
+            release (v);
 }
 
 void ForgeEngine::startVoice (Voice& v, int note, float velocity, bool retrigger, const Settings& s)
@@ -355,49 +597,156 @@ void ForgeEngine::startVoice (Voice& v, int note, float velocity, bool retrigger
         v.lfo1Rate = s.lfo[0].rate;
     }
 
-    for (int l = 0; l < 2; ++l)
-        if (s.lfo[l].retrigger)
+    for (int l = 0; l < numLfos; ++l)
+        if (s.lfo[l].mode != LfoMode::free)
+        {
             v.lfoPhase[l] = 0.0;
+            v.lfoDone[l] = false;
+        }
 
     if (retrigger)
     {
         v.velocity = velocity;
+        v.randomValue = random.nextFloat();
 
         if (! v.active)
         {
-            // Single oscillators start at zero phase for a consistent punch; unison spreads randomly.
-            for (int o = 0; o < 2; ++o)
+            // Single oscillators start at a fixed phase for a consistent punch unless random
+            // phase is turned up; unison voices always spread.
+            for (int o = 0; o < numOscs; ++o)
                 for (int u = 0; u < maxUnison; ++u)
-                    v.phases[o][u] = s.osc[o].unison > 1 ? random.nextDouble() : 0.0;
+                    v.phases[o][u] = s.osc[o].unison > 1 ? random.nextDouble()
+                                                          : s.osc[o].randomPhase * random.nextDouble();
 
             v.subPhase = 0.0;
-            std::fill (&v.ic1[0][0], &v.ic1[0][0] + 4, 0.0f);
-            std::fill (&v.ic2[0][0], &v.ic2[0][0] + 4, 0.0f);
-            v.lastOsc[0] = v.lastOsc[1] = 0.0f;
+            for (auto& filter : v.filters)
+                for (auto& side : filter)
+                    side.reset();
+            std::fill (std::begin (v.lastOsc), std::end (v.lastOsc), 0.0f);
+            std::fill (std::begin (v.lfoRateMod), std::end (v.lfoRateMod), 0.0f);
 
-            for (int l = 0; l < 2; ++l)
-                v.lfoSmoothed[l] = lfoShapeValue (s.lfo[l].shape, s.lfo[l].retrigger ? 0.0 : freeLfoPhase[l]);
+            for (int l = 0; l < numLfos; ++l)
+                v.lfoSmoothed[l] = lfoValue (s.lfo[l], l, s.lfo[l].mode == LfoMode::free ? freeLfoPhase[l] : 0.0);
         }
 
         v.active = true;
         v.amp.noteOn();
-        v.env2.noteOn();
+        for (auto& e : v.env)
+            e.noteOn();
     }
 }
 
 //==============================================================================
-void ForgeEngine::renderVoice (Voice& v, float* left, float* right, float* vowelOut, int numSamples,
-                               const Settings& s, double bpm)
+float ForgeEngine::nextNoise (Voice& v, NoiseType type, float colour, double noteHz)
+{
+    const auto white = random.nextFloat() * 2.0f - 1.0f;
+    float out = white;
+
+    switch (type)
+    {
+        case NoiseType::white:
+            break;
+
+        case NoiseType::pink:
+        {
+            // Paul Kellet's economy pink filter.
+            auto* b = v.pink;
+            b[0] = 0.99886f * b[0] + white * 0.0555179f;
+            b[1] = 0.99332f * b[1] + white * 0.0750759f;
+            b[2] = 0.96900f * b[2] + white * 0.1538520f;
+            b[3] = 0.86650f * b[3] + white * 0.3104856f;
+            b[4] = 0.55000f * b[4] + white * 0.5329522f;
+            b[5] = -0.7616f * b[5] - white * 0.0168980f;
+            out = (b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + white * 0.5362f) * 0.11f;
+            b[6] = white * 0.115926f;
+            break;
+        }
+
+        case NoiseType::brown:
+            v.brown = juce::jlimit (-1.0f, 1.0f, v.brown + white * 0.02f) * 0.998f;
+            out = v.brown * 3.0f;
+            break;
+
+        case NoiseType::hum:
+        {
+            // Mains-style buzz: odd harmonics of 50-120 Hz with a little jitter and hiss.
+            const auto base = 50.0 + colour * 70.0;
+            v.humPhase = wrap (v.humPhase + base * (1.0 + white * 0.002) / sampleRate);
+            float buzz = 0.0f;
+            for (int h = 1; h <= 9; h += 2)
+                buzz += (float) std::sin (twoPi * v.humPhase * h) / (float) h;
+            out = buzz * 0.8f + white * 0.08f;
+            break;
+        }
+
+        case NoiseType::crackle:
+            if (random.nextFloat() < 0.0004f + colour * 0.004f)
+                v.crackleDecay = (random.nextFloat() * 2.0f - 1.0f);
+            v.crackleDecay *= 0.93f;
+            out = v.crackleDecay * 2.0f;
+            break;
+
+        case NoiseType::digital:
+        {
+            // Sample-and-hold noise at a key-tracked rate.
+            v.digitalPhase += noteHz * (1.0 + colour * 31.0) / sampleRate;
+            if (v.digitalPhase >= 1.0)
+            {
+                v.digitalPhase -= std::floor (v.digitalPhase);
+                v.digitalHeld = white;
+            }
+            return v.digitalHeld * 0.7f;
+        }
+
+        case NoiseType::metal:
+        {
+            // Four inharmonic sines ring-modulated by noise.
+            constexpr double ratios[4] { 1.0, 1.414, 2.236, 3.162 };
+            float ring = 0.0f;
+            for (int i = 0; i < 4; ++i)
+            {
+                v.metalPhase[i] = wrap (v.metalPhase[i] + noteHz * ratios[i] * 2.0 / sampleRate);
+                ring += (float) std::sin (twoPi * v.metalPhase[i]);
+            }
+            out = ring * 0.25f * (0.4f + 0.6f * std::abs (white));
+            return out;
+        }
+
+        case NoiseType::count:
+            break;
+    }
+
+    // Colour tilts white, pink and brown between dark and bright.
+    if (type == NoiseType::white || type == NoiseType::pink || type == NoiseType::brown)
+    {
+        const auto coeff = 0.02f + colour * colour * 0.98f;
+        v.tone += coeff * (out - v.tone);
+        out = colour > 0.5f ? out - v.tone * (colour - 0.5f) * 1.6f : v.tone;
+    }
+
+    return out;
+}
+
+//==============================================================================
+void ForgeEngine::renderVoice (Voice& v, float* left, float* right, int offset, int numSamples,
+                               const Settings& s, double bpm, bool traced)
 {
     const auto sr = sampleRate;
     const auto glideCoeff = s.glideMs > 0.0f ? 1.0 - std::exp (-1.0 / (s.glideMs * 0.001 * sr / controlInterval)) : 1.0;
     const auto pitchEnvCoeff = (float) std::exp (-(double) controlInterval / (juce::jmax (1.0f, s.pitchDecayMs) * 0.001 * sr));
-    const auto lfoSmoothCoeff = 1.0f - std::exp (-(float) controlInterval / (0.002f * (float) sr));
-    const auto velocityGain = 0.35f + 0.65f * v.velocity;
-    const UserWavetable* user[2] { userTables[0].load(), userTables[1].load() };
+    const UserWavetable* user[numOscs] { userTables[0].load(), userTables[1].load(), userTables[2].load() };
+    const auto numTables = bank->getNumTables();
 
-    const double lfoHz[2] { Choices::lfoCyclesPerBeat[v.lfo1Rate] * bpm / 60.0,
-                            Choices::lfoCyclesPerBeat[s.lfo[1].rate] * bpm / 60.0 };
+    double lfoBaseHz[numLfos];
+    float lfoSmoothCoeff[numLfos];
+    for (int l = 0; l < numLfos; ++l)
+    {
+        const auto& lfo = s.lfo[l];
+        const auto rateIndex = juce::jlimit (0, lfoRateNames().size() - 1, l == 0 ? v.lfo1Rate : lfo.rate);
+        lfoBaseHz[l] = lfo.sync ? lfoRateCyclesPerBeat()[rateIndex] * bpm / 60.0 : lfo.hz;
+        const auto smoothSeconds = 0.0015f + lfo.smooth * lfo.smooth * 0.08f;
+        lfoSmoothCoeff[l] = 1.0f - std::exp (-(float) controlInterval / (smoothSeconds * (float) sr));
+    }
 
     int done = 0;
 
@@ -409,55 +758,87 @@ void ForgeEngine::renderVoice (Voice& v, float* left, float* right, float* vowel
         v.hz += (v.targetHz - v.hz) * glideCoeff;
         v.pitchEnv *= pitchEnvCoeff;
 
-        float lfo[2];
-        for (int l = 0; l < 2; ++l)
+        float sources[(int) ModSource::count] {};
+
+        for (int l = 0; l < numLfos; ++l)
         {
-            const auto phase = s.lfo[l].retrigger ? v.lfoPhase[l] : wrap (freeLfoPhase[l] + lfoHz[l] * done / sr);
-            v.lfoSmoothed[l] += (lfoShapeValue (s.lfo[l].shape, phase) - v.lfoSmoothed[l]) * lfoSmoothCoeff;
-            lfo[l] = v.lfoSmoothed[l];
-            if (s.lfo[l].retrigger)
-                v.lfoPhase[l] = wrap (v.lfoPhase[l] + lfoHz[l] * chunk / sr);
+            const auto& lfo = s.lfo[l];
+            const auto hz = lfoBaseHz[l] * std::exp2 (juce::jlimit (-6.0f, 6.0f, v.lfoRateMod[l] * 4.0f));
+            double phase;
+
+            if (lfo.mode == LfoMode::free)
+            {
+                phase = wrap (freeLfoPhase[l] + lfoBaseHz[l] * (offset + done) / sr);
+            }
+            else
+            {
+                phase = v.lfoDone[l] ? 0.99999 : v.lfoPhase[l];
+                const auto next = v.lfoPhase[l] + hz * chunk / sr;
+                if (lfo.mode == LfoMode::envelope && next >= 1.0)
+                    v.lfoDone[l] = true;
+                v.lfoPhase[l] = wrap (next);
+            }
+
+            v.lfoSmoothed[l] += (lfoValue (lfo, l, phase) - v.lfoSmoothed[l]) * lfoSmoothCoeff[l];
+            sources[(int) ModSource::lfo1 + l] = v.lfoSmoothed[l];
         }
 
-        const auto env2 = v.env2.getNextSample();
-
-        float sources[(int) ModSource::count] {};
-        sources[(int) ModSource::lfo1] = lfo[0];
-        sources[(int) ModSource::lfo2] = lfo[1];
-        sources[(int) ModSource::env2] = env2;
+        sources[(int) ModSource::env2] = v.env[0].getNextSample();
+        sources[(int) ModSource::env3] = v.env[1].getNextSample();
+        sources[(int) ModSource::ampEnv] = v.amp.isActive() ? 1.0f : 0.0f;
+        for (int m = 0; m < numMacros; ++m)
+            sources[(int) ModSource::macro1 + m] = s.macros[m];
         sources[(int) ModSource::velocity] = v.velocity;
         sources[(int) ModSource::note] = (float) (v.note - 60) / 60.0f;
         sources[(int) ModSource::modWheel] = modWheel;
+        sources[(int) ModSource::aftertouch] = aftertouch;
+        sources[(int) ModSource::random] = v.randomValue;
 
         float mod[(int) ModDest::count] {};
         for (const auto& slot : s.slots)
-            if (slot.source != ModSource::none && slot.dest != ModDest::none)
-                mod[(int) slot.dest] += sources[(int) slot.source] * slot.amount;
+        {
+            if (slot.source == ModSource::none || slot.dest == ModDest::none)
+                continue;
 
-        if (vowelOut != nullptr)
-            std::fill_n (vowelOut + done, chunk, mod[(int) ModDest::fxVowel]);
+            auto value = sources[(int) slot.source];
+            if (slot.bipolar && slot.source != ModSource::note)
+                value = value * 2.0f - 1.0f;
+            if (slot.aux != ModSource::none)
+                value *= sources[(int) slot.aux];
+            mod[(int) slot.dest] += value * slot.amount;
+        }
 
-        const auto baseHz = v.hz * semitonesToRatio (bendSemitones + s.pitchEnvSemis * v.pitchEnv);
+        for (int l = 0; l < numLfos; ++l)
+            v.lfoRateMod[l] = mod[(int) ModDest::lfo1Rate + l];
+
+        if (traced)
+            for (int d = 0; d < numFxDests; ++d)
+                std::fill_n (fxTraces[(size_t) d].begin() + offset + done, chunk, mod[firstFxDest + d]);
+
+        const auto baseHz = v.hz * semitonesToRatio (bendSemitones + s.masterTune + mod[(int) ModDest::masterPitch] * 24.0
+                                                     + (s.pitchEnvSemis + mod[(int) ModDest::pitchEnvAmount] * 48.0f) * v.pitchEnv);
 
         // Oscillator setup: pitch, unison spread and gains, band-limit level, modulated position and warps.
-        double incs[2][maxUnison] {};
-        float gainsL[2][maxUnison] {}, gainsR[2][maxUnison] {};
-        int levels[2] {};
-        float positions[2] {}, warps[2][2] {};
-        bool useUser[2] {};
+        double incs[numOscs][maxUnison] {};
+        float gainsL[numOscs][maxUnison] {}, gainsR[numOscs][maxUnison] {};
+        int levels[numOscs] {}, unison[numOscs] {};
+        float positions[numOscs] {}, warps[numOscs][2] {};
+        bool useUser[numOscs] {}, oscOn[numOscs] {};
 
-        const ModDest posDest[2] { ModDest::posA, ModDest::posB };
-        const ModDest warpDest[2][2] { { ModDest::warpA1, ModDest::warpA2 }, { ModDest::warpB1, ModDest::warpB2 } };
-        const ModDest levelDest[2] { ModDest::levelA, ModDest::levelB };
-        const ModDest pitchDest[2] { ModDest::pitchA, ModDest::pitchB };
-
-        for (int o = 0; o < 2; ++o)
+        for (int o = 0; o < numOscs; ++o)
         {
             const auto& osc = s.osc[o];
-            const auto oscHz = baseHz * semitonesToRatio (osc.octave * 12.0 + osc.semitone + osc.fine / 100.0
-                                                          + mod[(int) pitchDest[o]] * 24.0);
+            const auto base = (int) ModDest::posA + o * 7; // pos, warp1, warp2, level, pitch, pan, detune
+            const auto level = osc.on ? juce::jlimit (0.0f, 1.0f, osc.level + mod[base + 3]) : 0.0f;
+            oscOn[o] = osc.on;
+            if (! osc.on)
+                continue;
+
+            const auto oscHz = baseHz * semitonesToRatio (osc.octave * 12.0 + osc.semitone + osc.fine / 100.0 + mod[base + 4] * 24.0);
             const auto n = juce::jlimit (1, maxUnison, osc.unison);
-            const auto level = osc.on ? juce::jlimit (0.0f, 1.0f, osc.level + mod[(int) levelDest[o]]) : 0.0f;
+            const auto detune = juce::jlimit (0.0f, 1.0f, osc.detune + mod[base + 6]);
+            const auto pan = juce::jlimit (-1.0f, 1.0f, osc.pan + mod[base + 5]);
+            unison[o] = n;
 
             // Blend trades the centre voice against the detuned ones; 0.5 is even.
             const auto centreWeight = juce::jmin (1.0f, 2.0f * (1.0f - osc.blend));
@@ -471,10 +852,10 @@ void ForgeEngine::renderVoice (Voice& v, float* left, float* right, float* vowel
                 const auto isCentre = n == 1 || std::abs (spread) < 1.0f / (float) n;
                 weights[u] = isCentre ? centreWeight : sideWeight;
                 sumSquares += weights[u] * weights[u];
-                incs[o][u] = oscHz * semitonesToRatio (spread * osc.detune * 0.5) / sr;
-                const auto pan = spread * osc.width;
-                gainsL[o][u] = 1.0f - pan;
-                gainsR[o][u] = 1.0f + pan;
+                incs[o][u] = oscHz * semitonesToRatio (spread * detune * 0.75) / sr;
+                const auto voicePan = juce::jlimit (-1.0f, 1.0f, spread * osc.width + pan);
+                gainsL[o][u] = 1.0f - voicePan;
+                gainsR[o][u] = 1.0f + voicePan;
             }
 
             const auto norm = level / std::sqrt (juce::jmax (1.0e-6f, sumSquares));
@@ -487,55 +868,102 @@ void ForgeEngine::renderVoice (Voice& v, float* left, float* right, float* vowel
             auto brightness = 1.0;
             for (int w = 0; w < 2; ++w)
             {
-                warps[o][w] = juce::jlimit (0.0f, 1.0f, osc.warp[w] + mod[(int) warpDest[o][w]]);
-                brightness *= warpBrightness (osc.warpMode[w], warps[o][w]);
+                warps[o][w] = juce::jlimit (0.0f, 1.0f, osc.warp[w] + mod[base + 1 + w]);
+                if (osc.warpMode[w] != Warp::off)
+                    brightness *= warpBrightness (osc.warpMode[w], warps[o][w]);
             }
 
-            levels[o] = WavetableBank::levelForFrequency (oscHz * brightness * semitonesToRatio (osc.detune * 0.5), sr);
-            positions[o] = juce::jlimit (0.0f, 1.0f, osc.position + mod[(int) posDest[o]]);
-            useUser[o] = osc.table == userTable && user[o] != nullptr;
+            levels[o] = WavetableBank::levelForFrequency (oscHz * brightness * semitonesToRatio (detune * 0.75), sr);
+            positions[o] = juce::jlimit (0.0f, 1.0f, osc.position + mod[base]);
+            useUser[o] = osc.table >= numTables && user[o] != nullptr;
         }
 
-        const auto subLevel = juce::jlimit (0.0f, 1.0f, s.subLevel + mod[(int) ModDest::subLevel]);
+        const auto subLevel = s.subOn ? juce::jlimit (0.0f, 1.0f, s.subLevel + mod[(int) ModDest::subLevel]) : 0.0f;
         const auto noiseLevel = juce::jlimit (0.0f, 1.0f, s.noiseLevel + mod[(int) ModDest::noiseLevel]);
-        const auto subInc = baseHz * (s.subOctave < 0 ? 0.5 : 1.0) / sr;
+        const auto noiseColour = juce::jlimit (0.0f, 1.0f, s.noiseColour + mod[(int) ModDest::noiseColour]);
+        auto needNoise = noiseLevel > 0.0f;
+        for (int o = 0; o < numOscs; ++o)
+            needNoise = needNoise || (oscOn[o] && s.osc[o].warpSource == WarpSource::noise);
 
-        const auto keyTrack = std::pow ((float) (v.hz / 261.63), s.keyTrack);
-        const auto cutoff = juce::jlimit (20.0f, (float) sr * 0.45f,
-                                          s.cutoff * keyTrack * std::exp2 (mod[(int) ModDest::cutoff] * 7.0f));
-        const auto resonance = juce::jlimit (0.0f, 1.0f, s.resonance + mod[(int) ModDest::resonance]);
-        const auto drive = juce::jlimit (0.0f, 1.0f, s.drive + mod[(int) ModDest::drive]);
-        const auto driveGain = 1.0f + drive * 9.0f, driveMakeup = 1.0f / (1.0f + drive * 2.0f);
+        const auto subInc = baseHz * std::exp2 ((double) juce::jlimit (-2, 0, s.subOctave)) / sr;
 
-        const auto k = 2.0f - 1.96f * resonance;
-        const auto g = (float) std::tan (juce::MathConstants<double>::pi * cutoff / sr);
-        const auto a1 = 1.0f / (1.0f + g * (g + k));
-        const auto a2 = g * a1;
-        const auto a3 = g * a2;
-        const auto stages = s.filterType == FilterType::lp24 ? 2 : 1;
+        // Filters.
+        bool filterOn[2];
+        for (int f = 0; f < 2; ++f)
+        {
+            const auto& filter = s.filter[f];
+            const auto base = f == 0 ? (int) ModDest::cutoff : (int) ModDest::cutoff2;
+            filterOn[f] = filter.on;
+            if (! filter.on)
+                continue;
+
+            const auto keyTrack = std::pow ((float) (v.hz / 261.63), filter.keyTrack);
+            FilterParams params;
+            params.type = filter.type;
+            params.cutoff = juce::jlimit (8.0f, (float) sr * 0.45f, filter.cutoff * keyTrack * std::exp2 (mod[base] * 8.0f));
+            params.resonance = juce::jlimit (0.0f, 1.0f, filter.resonance + mod[base + 1]);
+            params.drive = juce::jlimit (0.0f, 1.0f, filter.drive + mod[base + 2]);
+            params.var = juce::jlimit (0.0f, 1.0f, filter.var + mod[base + 3]);
+            params.mix = juce::jlimit (0.0f, 1.0f, filter.mix + mod[base + 4]);
+            v.filters[f][0].setup (params);
+            v.filters[f][1].setup (params);
+        }
 
         const auto volume = juce::jlimit (0.0f, 2.0f, 1.0f + mod[(int) ModDest::volume]);
 
         auto tableSample = [&] (int o, double phase)
         {
             return useUser[o] ? user[o]->sample (levels[o], positions[o], phase)
-                              : bank->sample (juce::jlimit (0, bank->getNumTables() - 1, s.osc[o].table),
-                                              levels[o], positions[o], phase);
+                              : bank->sample (juce::jlimit (0, numTables - 1, s.osc[o].table), levels[o], positions[o], phase);
+        };
+
+        auto routeInto = [] (Route route, float (&buses)[4][2], float l, float r)
+        {
+            buses[(int) route][0] += l;
+            buses[(int) route][1] += r;
         };
 
         // ---- audio-rate rendering
         for (int i = 0; i < chunk; ++i)
         {
-            const auto sub = (float) std::sin (twoPi * v.subPhase);
-            float inL = 0.0f, inR = 0.0f;
-
-            // B first, so A's "other" modes hear this sample of B; B hears A's last one.
-            for (int o = 1; o >= 0; --o)
+            float sub = 0.0f;
+            switch (s.subShape)
             {
+                case SubShape::sine:     sub = (float) std::sin (twoPi * v.subPhase); break;
+                case SubShape::triangle: sub = (float) (v.subPhase < 0.5 ? 4.0 * v.subPhase - 1.0 : 3.0 - 4.0 * v.subPhase); break;
+                case SubShape::saw:      sub = (float) (2.0 * v.subPhase - 1.0); break;
+                case SubShape::square:   sub = v.subPhase < 0.5 ? 0.8f : -0.8f; break;
+                case SubShape::count:    break;
+            }
+            v.subPhase = wrap (v.subPhase + subInc);
+
+            const auto noise = needNoise ? nextNoise (v, s.noiseType, noiseColour, baseHz) : 0.0f;
+
+            float buses[4][2] {}; // filter 1, filter 2, both, direct
+
+            // C, then B, then A, so A's warps hear this sample of B and C.
+            for (int o = numOscs - 1; o >= 0; --o)
+            {
+                if (! oscOn[o])
+                {
+                    v.lastOsc[o] = 0.0f;
+                    continue;
+                }
+
                 const auto& osc = s.osc[o];
-                const auto other = v.lastOsc[1 - o];
-                const auto n = juce::jlimit (1, maxUnison, osc.unison);
-                float mono = 0.0f;
+                float other = 0.0f;
+                switch (osc.warpSource)
+                {
+                    case WarpSource::a:     other = v.lastOsc[0]; break;
+                    case WarpSource::b:     other = v.lastOsc[1]; break;
+                    case WarpSource::c:     other = v.lastOsc[2]; break;
+                    case WarpSource::sub:   other = sub; break;
+                    case WarpSource::noise: other = noise; break;
+                    case WarpSource::count: break;
+                }
+
+                float mono = 0.0f, outL = 0.0f, outR = 0.0f;
+                const auto n = unison[o];
 
                 for (int u = 0; u < n; ++u)
                 {
@@ -552,53 +980,48 @@ void ForgeEngine::renderVoice (Voice& v, float* left, float* right, float* vowel
 
                     const auto smp = tableSample (o, wrap (phase)) * gain;
                     mono += smp;
-                    inL += smp * gainsL[o][u];
-                    inR += smp * gainsR[o][u];
+                    outL += smp * gainsL[o][u];
+                    outR += smp * gainsR[o][u];
                     v.phases[o][u] = wrap (v.phases[o][u] + incs[o][u]);
                 }
 
                 v.lastOsc[o] = mono / (float) n;
+                routeInto (osc.route, buses, outL, outR);
             }
 
-            const auto noise = noiseLevel > 0.0f ? (random.nextFloat() * 2.0f - 1.0f) * noiseLevel * 0.5f : 0.0f;
-            const float in[2] { inL + noise, inR + noise };
-            float out[2];
+            if (noiseLevel > 0.0f)
+                routeInto (s.noiseRoute, buses, noise * noiseLevel * 0.5f, noise * noiseLevel * 0.5f);
+            if (s.subRoute != Route::direct)
+                routeInto (s.subRoute, buses, sub * subLevel, sub * subLevel);
 
-            // Drive into a state-variable filter (TPT); Low Pass 24 runs two stages.
+            float out[2];
             for (int ch = 0; ch < 2; ++ch)
             {
-                auto x = drive > 0.0f ? std::tanh (in[ch] * driveGain) * driveMakeup : in[ch];
-
-                for (int stage = 0; stage < stages; ++stage)
+                if (s.filtersParallel)
                 {
-                    auto& ic1 = v.ic1[stage][ch];
-                    auto& ic2 = v.ic2[stage][ch];
-                    const auto v3 = x - ic2;
-                    const auto v1 = a1 * ic1 + a2 * v3;
-                    const auto v2 = ic2 + a2 * ic1 + a3 * v3;
-                    ic1 = 2.0f * v1 - ic1;
-                    ic2 = 2.0f * v2 - ic2;
-
-                    switch (s.filterType)
-                    {
-                        case FilterType::lp12:
-                        case FilterType::lp24: x = v2; break;
-                        case FilterType::bp:   x = v1 * k; break;
-                        case FilterType::hp:   x = x - k * v1 - v2; break;
-                        case FilterType::notch:
-                        case FilterType::count: x = x - k * v1; break;
-                    }
+                    auto a = buses[0][ch] + 0.5f * buses[2][ch];
+                    auto b = buses[1][ch] + 0.5f * buses[2][ch];
+                    if (filterOn[0]) a = v.filters[0][ch].process (a);
+                    if (filterOn[1]) b = v.filters[1][ch].process (b);
+                    out[ch] = a + b;
+                }
+                else
+                {
+                    auto x = buses[0][ch] + buses[2][ch];
+                    if (filterOn[0]) x = v.filters[0][ch].process (x);
+                    x += buses[1][ch];
+                    if (filterOn[1]) x = v.filters[1][ch].process (x);
+                    out[ch] = x;
                 }
 
-                out[ch] = x;
+                out[ch] += buses[3][ch];
             }
 
-            // Sub stays clean and centred, after the filter.
-            v.subPhase = wrap (v.subPhase + subInc);
-
-            const auto gain = v.amp.getNextSample() * velocityGain * volume * 0.5f;
-            left[done + i]  += (out[0] + sub * subLevel) * gain;
-            right[done + i] += (out[1] + sub * subLevel) * gain;
+            // The sub stays clean and centred unless it is routed into a filter.
+            const auto directSub = s.subRoute == Route::direct ? sub * subLevel : 0.0f;
+            const auto gain = v.amp.getNextSample() * volume * 0.5f;
+            left[done + i]  += (out[0] + directSub) * gain;
+            right[done + i] += (out[1] + directSub) * gain;
         }
 
         done += chunk;

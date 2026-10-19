@@ -1,6 +1,7 @@
 #include "Wavetables.h"
 #include <juce_dsp/juce_dsp.h>
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <thread>
 
 namespace
 {
@@ -70,31 +71,161 @@ namespace
         return shapes[i] + mix * (shapes[i + 1] - shapes[i]);
     }
 
-    const Generator generators[] = { syncSaw, growl, formant, tearoutFold, metalScreech, pulse, reese, basicShapes };
+    // Additive helper: sums harmonics 1..n with amplitude amp(n).
+    // Generators are sampled at p = i / frameSize, so harmonics come from one sine table.
+    const std::vector<double>& sineTable()
+    {
+        static const auto table = []
+        {
+            std::vector<double> t ((size_t) WavetableBank::frameSize);
+            for (size_t i = 0; i < t.size(); ++i)
+                t[i] = std::sin (twoPi * (double) i / (double) t.size());
+            return t;
+        }();
+        return table;
+    }
+
+    template <typename Amp>
+    double additive (double p, int count, Amp&& amp)
+    {
+        const auto& table = sineTable();
+        const auto mask = WavetableBank::frameSize - 1;
+        const auto index = (int) std::lround ((p - std::floor (p)) * WavetableBank::frameSize);
+        double s = 0.0;
+        for (int n = 1; n <= count; ++n)
+            s += amp (n) * table[(size_t) ((index * n) & mask)];
+        return s;
+    }
+
+    // Formant voice with a peak at `peak` harmonics and a second at `peak2`.
+    double formantVoice (double p, double peak, double peak2, double width)
+    {
+        return additive (p, 120, [&] (int n) { return (gauss (n - peak, width) + 0.6 * gauss (n - peak2, width * 1.4) + 0.03) / std::sqrt ((double) n); });
+    }
+
+    // Saw that softens like an analog filter at the start and opens up by the end.
+    double analogSaw (double p, double t)   { return additive (p, 200, [t] (int n) { return std::pow ((double) n, -(2.2 - t * 1.2)) * (n % 2 ? 1.0 : 0.94); }); }
+    double analogSquare (double p, double t) { return additive (p, 200, [t] (int n) { return n % 2 ? std::pow ((double) n, -(2.2 - t * 1.2)) : 0.0; }); }
+    double sawToSquare (double p, double t) { return 0.5 * (saw (p) - saw (p + 0.5 * t)) + (1.0 - t) * 0.5 * saw (p); }
+    double sineHarmonics (double p, double t)
+    {
+        const auto count = 1.0 + t * 31.0;
+        return additive (p, 32, [count] (int n) { return n <= count ? 1.0 / n : (n < count + 1.0 ? (count + 1.0 - n) / n : 0.0); });
+    }
+    double drawbars (double p, double t)
+    {
+        static const double bars[9][2] = { { 1, 1 }, { 2, 0.8 }, { 3, 0.6 }, { 4, 0.5 }, { 6, 0.4 }, { 8, 0.35 }, { 10, 0.3 }, { 12, 0.25 }, { 16, 0.2 } };
+        double s = 0.0;
+        for (int i = 0; i < 9; ++i)
+            s += (i == 0 ? 1.0 : juce::jlimit (0.0, 1.0, t * 9.0 - i + 1.0)) * bars[i][1] * sine (p * bars[i][0]);
+        return s;
+    }
+    double fm21 (double p, double t)       { return std::sin (twoPi * p + t * 6.0 * sine (2.0 * p)); }
+    double fm32 (double p, double t)       { return std::sin (twoPi * 2.0 * p + t * 7.0 * sine (3.0 * p)); }
+    double fm71 (double p, double t)       { return std::sin (twoPi * p + t * 4.0 * sine (7.0 * p)); }
+    double wetGrowl (double p, double t)   { return formantVoice (p, 2.0 + t * 30.0, 6.0 + t * 50.0, 1.8 + t * 2.0); }
+    double vowelAOU (double p, double t)
+    {
+        // Harmonic numbers for a 110 Hz voice.
+        const double a[2] = { 7.3, 10.5 }, o[2] = { 4.1, 7.3 }, u[2] = { 3.0, 6.4 };
+        const auto x = t * 2.0;
+        const auto* from = x < 1.0 ? a : o;
+        const auto* to = x < 1.0 ? o : u;
+        const auto m = x < 1.0 ? x : x - 1.0;
+        return formantVoice (p, from[0] + m * (to[0] - from[0]), from[1] + m * (to[1] - from[1]), 1.2);
+    }
+    double vowelIEA (double p, double t)
+    {
+        const double i[2] = { 2.7, 20.9 }, e[2] = { 3.6, 14.5 }, a[2] = { 7.3, 10.5 };
+        const auto x = t * 2.0;
+        const auto* from = x < 1.0 ? i : e;
+        const auto* to = x < 1.0 ? e : a;
+        const auto m = x < 1.0 ? x : x - 1.0;
+        return formantVoice (p, from[0] + m * (to[0] - from[0]), from[1] + m * (to[1] - from[1]), 1.2);
+    }
+    double digitalCrush (double p, double t) { const auto steps = std::exp2 (8.0 - t * 6.0); return std::round (saw (p) * steps) / steps; }
+    double hardFold (double p, double t)   { const auto x = (1.0 + t * 14.0) * sine (p); return std::asin (std::sin (x)) / juce::MathConstants<double>::halfPi; }
+    double spectralComb (double p, double t) { return additive (p, 96, [t] (int n) { return std::abs (std::cos (juce::MathConstants<double>::pi * n * (0.05 + t * 0.2))) / n; }); }
+    double harmonicSaws (double p, double t) { return saw (p) + t * 0.6 * saw (2.0 * p) + t * t * 0.45 * saw (3.0 * p) + t * t * t * 0.3 * saw (5.0 * p); }
+    double pulseSync (double p, double t)  { return square (p * (1.0 + t * 7.0), 0.3); }
+    double triSync (double p, double t)    { return triangle (p * (1.0 + t * 7.0)); }
+    double squareSync (double p, double t) { return square (p * (1.0 + t * 7.0)); }
+    double robotBuzz (double p, double t)
+    {
+        const auto x = p - std::floor (p);
+        const auto pulseWidth = 0.15 - t * 0.12;
+        return (x < pulseWidth ? 1.0 : -pulseWidth / (1.0 - pulseWidth)) * 0.6 + 0.4 * formantVoice (p, 5.0 + t * 12.0, 14.0, 1.5) * 0.4;
+    }
+    double dirtySaw (double p, double t)   { return std::tanh (saw (p) * (1.0 + t * 12.0) + 0.3 * t * sine (3.0 * p)); }
+    double phaseDistSaw (double p, double t) { const auto x = p - std::floor (p); const auto d = 0.5 - t * 0.48;
+                                               const auto q = x < d ? 0.5 * x / d : 0.5 + 0.5 * (x - d) / (1.0 - d);
+                                               return std::cos (twoPi * q); }
+    double resonantSweep (double p, double t) { const auto x = p - std::floor (p); return std::sin (twoPi * x * (1.0 + t * 15.0)) * (1.0 - x); }
+    double noiseCycle (double p, double t)
+    {
+        // A fixed random spectrum (seeded) that gets brighter across the frames.
+        static const auto phases = [] { std::array<double, 128> a {}; juce::Random r (4321); for (auto& v : a) v = r.nextDouble(); return a; }();
+        double s = 0.0;
+        const auto top = 8.0 + t * 120.0;
+        for (int n = 1; n <= 128 && n <= top; ++n)
+            s += std::sin (twoPi * (p * n + phases[(size_t) n - 1])) / std::sqrt ((double) n);
+        return s;
+    }
+    double tearoutScreech (double p, double t) { return std::sin ((1.0 + t * 4.0) * std::sin (twoPi * p + t * 5.0 * sine (5.0 * p)) * 1.5); }
+    double chirpGrowl (double p, double t) { const auto x = p - std::floor (p); return std::sin (twoPi * (x + t * 6.0 * x * x)); }
+    double warmSub (double p, double t)    { return sine (p) + t * 0.5 * sine (2.0 * p) + t * t * 0.25 * sine (3.0 * p); }
+
+    const Generator generators[] = { syncSaw, growl, formant, tearoutFold, metalScreech, pulse, reese, basicShapes,
+                                     analogSaw, analogSquare, sawToSquare, sineHarmonics, drawbars, fm21, fm32, fm71,
+                                     wetGrowl, vowelAOU, vowelIEA, digitalCrush, hardFold, spectralComb, harmonicSaws,
+                                     pulseSync, triSync, squareSync, robotBuzz, dirtySaw, phaseDistSaw, resonantSweep,
+                                     noiseCycle, tearoutScreech, chirpGrowl, warmSub };
 }
 
 const juce::StringArray& WavetableBank::getTableNames()
 {
     static const juce::StringArray names { "Riddim Sync Saw", "Growl FM", "Yoi Formant", "Tearout Fold",
-                                           "Metal Screech", "Pulse Width", "Reese Stack", "Basic Shapes" };
+                                           "Metal Screech", "Pulse Width", "Reese Stack", "Basic Shapes",
+                                           "Analog Saw", "Analog Square", "Saw To Square", "Sine Harmonics", "Drawbars",
+                                           "FM 2:1", "FM 3:2", "FM 7:1", "Wet Growl", "Vowel A-O-U", "Vowel I-E-A",
+                                           "Digital Crush", "Hard Fold", "Spectral Comb", "Harmonic Saws", "Pulse Sync",
+                                           "Tri Sync", "Square Sync", "Robot Buzz", "Dirty Saw", "Phase Dist", "Resonant Sweep",
+                                           "Noise Cycle", "Tearout Screech", "Chirp Growl", "Warm Sub" };
     return names;
 }
 
 WavetableBank::WavetableBank()
 {
-    std::vector<float> raw ((size_t) (numFrames * frameSize));
+    // Tables are independent, so build them on every core; startup is otherwise seconds long.
+    constexpr auto numTables = (int) std::size (generators);
+    tables.resize ((size_t) numTables);
+    std::atomic<int> next { 0 };
 
-    for (auto generator : generators)
+    auto work = [this, &next]
     {
-        for (int frame = 0; frame < numFrames; ++frame)
-        {
-            const auto morph = (double) frame / (double) (numFrames - 1);
-            for (int i = 0; i < frameSize; ++i)
-                raw[(size_t) (frame * frameSize + i)] = (float) generator ((double) i / (double) frameSize, morph);
-        }
+        std::vector<float> raw ((size_t) (numFrames * frameSize));
 
-        tables.push_back (buildLevels (raw, numFrames, true));
-    }
+        for (int t = next++; t < numTables; t = next++)
+        {
+            const auto generator = generators[t];
+            for (int frame = 0; frame < numFrames; ++frame)
+            {
+                const auto morph = (double) frame / (double) (numFrames - 1);
+                for (int i = 0; i < frameSize; ++i)
+                    raw[(size_t) (frame * frameSize + i)] = (float) generator ((double) i / (double) frameSize, morph);
+            }
+
+            tables[(size_t) t] = buildLevels (raw, numFrames, true);
+        }
+    };
+
+    std::vector<std::thread> threads;
+    const auto numThreads = juce::jlimit (1, 16, (int) std::thread::hardware_concurrency()) - 1;
+    for (int i = 0; i < numThreads; ++i)
+        threads.emplace_back (work);
+    work();
+    for (auto& thread : threads)
+        thread.join();
 }
 
 std::vector<float> WavetableBank::buildLevels (const std::vector<float>& rawFrames, int frameCount, bool normalisePerFrame)

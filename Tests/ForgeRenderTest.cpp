@@ -5,9 +5,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
-#include "../Source/forge/ForgeEngine.h"
-#include "../Source/forge/ForgeParameters.h"
-#include "../Source/dsp/RiddimFx.h"
+#include "../Source/forge/ForgeRenderer.h"
 #include "../Source/Parameters.h"
 #include "../Source/PresetManager.h"
 
@@ -80,12 +78,11 @@ namespace
 
     bool renderCase (const juce::String& name, ParameterHost& host, const UserWavetable* imported, const juce::File& outDir)
     {
-        ForgeEngine engine;
-        engine.prepare (sampleRate, blockSize);
-        engine.setUserTable (0, imported);
-        RiddimFx fx;
-        fx.prepare (sampleRate, blockSize);
-        const ForgeSettingsReader reader (host.parameters);
+        ForgeRenderer renderer (host.parameters);
+        renderer.prepare (sampleRate, blockSize);
+        renderer.setUserTable (0, imported);
+        for (int l = 0; l < Forge::numLfos; ++l)
+            renderer.setLfoCurve (l, Forge::LfoCurve::fromString (host.parameters.state.getProperty (ForgeID::lfoCurveProperty (l)).toString()));
 
         const auto stepSamples = (int) (sampleRate * 60.0 / bpm / 3.0);
         constexpr int bars = 4;
@@ -101,8 +98,6 @@ namespace
             }
 
         juce::AudioBuffer<float> output (2, total), block (2, blockSize);
-        const auto synth = reader.read();
-        const auto fxBase = readFxSettings (host.parameters);
         const auto startMs = juce::Time::getMillisecondCounterHiRes();
 
         for (int pos = 0; pos < total; pos += blockSize)
@@ -114,14 +109,7 @@ namespace
                 if (m.samplePosition >= pos && m.samplePosition < pos + n)
                     midi.addEvent (m.getMessage(), m.samplePosition - pos);
 
-            engine.process (view, midi, synth, bpm, std::nullopt);
-
-            // The same wiring as the Forge processor.
-            auto fxSettings = fxBase;
-            fxSettings.vowelModTrace = engine.getVowelTrace();
-            fxSettings.vowelModDepth = 1.0f;
-            fxSettings.combTrackHz = (float) engine.getCurrentHz();
-            fx.process (view, fxSettings);
+            renderer.process (view, midi, bpm, std::nullopt);
 
             for (int ch = 0; ch < 2; ++ch)
                 output.copyFrom (ch, pos, view, ch, 0, n);
@@ -176,9 +164,9 @@ int main (int argc, char* argv[])
     }
     std::printf ("wavetable import: %d frames OK\n", imported->getNumFrames());
 
-    presets.loadPreset (1);
+    presets.loadPreset (juce::jmin (1, presets.getNumFactoryPresets() - 1));
     if (auto* table = host.parameters.getParameter (ForgeID::osc ('A', ForgeID::table)))
-        table->setValueNotifyingHost (table->convertTo0to1 ((float) Forge::userTable));
+        table->setValueNotifyingHost (table->convertTo0to1 ((float) Forge::importedTable()));
     ok = renderCase ("Imported Table", host, imported.get(), outDir) && ok;
 
     return ok ? 0 : 1;

@@ -113,15 +113,28 @@ juce_add_plugin(RiddimForge
     COPY_PLUGIN_AFTER_BUILD FALSE
     FORMATS ${RIDDIM_FORMATS})
 
-target_sources(RiddimForge PRIVATE
+# Factory presets, compiled in.
+juce_add_binary_data(ForgeBinaryData
+    HEADER_NAME ForgeBinaryData.h
+    NAMESPACE ForgeBinaryData
+    SOURCES Presets/forge_factory.json)
+
+set(FORGE_DSP_SOURCES
     Source/forge/ForgeEngine.cpp
+    Source/forge/ForgeFilter.cpp
+    Source/forge/ForgeRack.cpp
+    Source/forge/ForgeRenderer.cpp
     Source/forge/ForgeParameters.cpp
-    Source/forge/ForgePresets.cpp
+    Source/forge/ForgePresets.cpp)
+
+target_sources(RiddimForge PRIVATE
+    ${FORGE_DSP_SOURCES}
     Source/forge/ForgeUI.cpp
     Source/forge/ForgeProcessor.cpp
     Source/forge/ForgeEditor.cpp
     ${RIDDIM_SHARED_SOURCES})
 riddim_configure(RiddimForge)
+target_link_libraries(RiddimForge PRIVATE ForgeBinaryData)
 
 # Offline render check: plays riddim patterns through the engine and FX chain and writes WAVs.
 option(RIDDIM_BUILD_TESTS "Build the offline render test" OFF)
@@ -141,9 +154,7 @@ if(RIDDIM_BUILD_TESTS)
     juce_add_console_app(ForgeRenderTest PRODUCT_NAME "ForgeRenderTest")
     target_sources(ForgeRenderTest PRIVATE
         Tests/ForgeRenderTest.cpp
-        Source/forge/ForgeEngine.cpp
-        Source/forge/ForgeParameters.cpp
-        Source/forge/ForgePresets.cpp
+        ${FORGE_DSP_SOURCES}
         Source/Parameters.cpp
         Source/PresetManager.cpp
         Source/FactoryPresets.cpp
@@ -152,6 +163,7 @@ if(RIDDIM_BUILD_TESTS)
         Source/dsp/Wavetables.cpp)
     target_compile_definitions(ForgeRenderTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(ForgeRenderTest PRIVATE
+        ForgeBinaryData
         juce::juce_audio_formats juce::juce_audio_processors juce::juce_dsp juce::juce_gui_basics
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 

@@ -34,6 +34,13 @@ juce::StringArray PresetManager::getPresetNames() const
     return names;
 }
 
+juce::String PresetManager::getCategory (int index) const
+{
+    if (index >= 0 && index < getNumFactoryPresets())
+        return factory[(size_t) index].category;
+    return index >= 0 ? "User" : juce::String();
+}
+
 juce::String PresetManager::getCurrentName() const
 {
     return getPresetNames()[currentIndex];
@@ -52,11 +59,17 @@ void PresetManager::loadPreset (int index)
 
     if (index < numFactory)
     {
+        if (onBeforeLoad)
+            onBeforeLoad();
         resetToDefaults();
 
-        for (const auto& [id, value] : factory[(size_t) index].values)
+        const auto& preset = factory[(size_t) index];
+        for (const auto& [id, value] : preset.values)
             if (auto* p = state.getParameter (id))
                 p->setValueNotifyingHost (p->convertTo0to1 (value));
+
+        for (const auto& [key, text] : preset.text)
+            state.state.setProperty (juce::Identifier (key), text, nullptr);
     }
     else if (index - numFactory < userPresets.size())
     {
@@ -66,11 +79,20 @@ void PresetManager::loadPreset (int index)
 
             if (tree.hasType (state.state.getType()))
             {
+                if (onBeforeLoad)
+                    onBeforeLoad();
                 resetToDefaults();
 
                 for (const auto& child : tree)
                     if (auto* p = state.getParameter (child.getProperty ("id").toString()))
                         p->setValueNotifyingHost (p->convertTo0to1 ((float) child.getProperty ("value")));
+
+                for (int i = 0; i < tree.getNumProperties(); ++i)
+                {
+                    const auto key = tree.getPropertyName (i);
+                    if (key.toString() != "preset")
+                        state.state.setProperty (key, tree.getProperty (key), nullptr);
+                }
             }
         }
     }

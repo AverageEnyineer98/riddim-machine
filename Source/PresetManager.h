@@ -4,8 +4,10 @@
 
 struct FactoryPreset
 {
-    const char* name;
-    std::vector<std::pair<juce::String, float>> values; // plain (not normalised) values; the rest stay default
+    juce::String name;
+    std::vector<std::pair<juce::String, float>> values;        // plain (not normalised) values; the rest stay default
+    std::vector<std::pair<juce::String, juce::String>> text {}; // state-tree properties, e.g. macro names and LFO curves
+    juce::String category {};
 };
 
 const std::vector<FactoryPreset>& synthFactoryPresets();
@@ -35,6 +37,10 @@ public:
     void refreshUserPresets();
 
     juce::File getUserPresetFolder() const;
+    juce::String getCategory (int index) const;
+
+    // Called before any preset loads, so a plugin can clear text properties the preset may not set.
+    std::function<void()> onBeforeLoad;
 
     // Restores the selected preset name from saved plugin state.
     void setCurrentIndexFromName (const juce::String& name);
