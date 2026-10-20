@@ -101,6 +101,7 @@ namespace ForgeID
     inline constexpr const char* bendRange  = "bend_range";
     inline constexpr const char* polyphony  = "polyphony";
     inline constexpr const char* masterTune = "master_tune";
+    inline constexpr const char* tempoMode  = "tempo_mode";
 
     // FX rack.
     inline constexpr const char* hyperOn = "rk_hyper_on", *hyperMix = "rk_hyper_mix", *hyperDetune = "rk_hyper_detune",
@@ -134,6 +135,12 @@ const juce::StringArray& forgeTableNames();
 const juce::StringArray& forgeDelayTimeNames();
 const double* forgeDelayTimeBeats();
 const juce::StringArray& forgeEqShapeNames();
+
+// How synced LFOs, the hit sequencer and the delay read the song tempo. Auto plays a
+// half-time project (under 100 BPM, e.g. 75) at double speed, so riddim at 75 or 150 BPM
+// moves the same.
+const juce::StringArray& forgeTempoModeNames();
+double forgeTempoFactor (int tempoMode, double hostBpm);
 
 juce::AudioProcessorValueTreeState::ParameterLayout createForgeParameterLayout();
 

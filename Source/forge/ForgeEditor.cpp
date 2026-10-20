@@ -724,8 +724,13 @@ namespace
     class LfoPanel : public Card
     {
     public:
-        explicit LfoPanel (ForgeProcessor& p) : Card ("LFOs", cyan), editor (p, cyan)
+        explicit LfoPanel (ForgeProcessor& p)
+            : Card ("LFOs", cyan), tempo (p.parameters, ForgeID::tempoMode, forgeTempoModeNames()), editor (p, cyan)
         {
+            tempo.box.setTooltip ("How synced LFOs, the hit sequencer and the delay follow your song. Auto: a half-time "
+                                  "project under 100 BPM (like 75) plays at double speed, so it moves the same as at 150. "
+                                  "Song: always the song tempo. x2 / x1/2: always double or half.");
+            addAndMakeVisible (tempo.box);
             for (int l = 0; l < Forge::numLfos; ++l)
             {
                 tabs[l].button.setButtonText ("LFO " + juce::String (l + 1));
@@ -750,6 +755,8 @@ namespace
             {
                 auto row = area.removeFromTop (22);
                 grid.setBounds (row.removeFromRight (84));
+                row.removeFromRight (6);
+                tempo.box.setBounds (row.removeFromRight (122));
                 row.removeFromRight (8);
                 for (int l = 0; l < Forge::numLfos; ++l)
                 {
@@ -780,6 +787,7 @@ namespace
 
         SourceTab tabs[Forge::numLfos];
         std::unique_ptr<LfoControls> controls[Forge::numLfos];
+        ParamMenu tempo;
         juce::ComboBox grid;
         LfoEditor editor;
     };

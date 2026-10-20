@@ -83,6 +83,15 @@ void ForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
         }
     }
 
+    // Half-time projects (e.g. 75 BPM) can play synced movement at riddim speed.
+    if (auto* mode = parameters.getRawParameterValue (ForgeID::tempoMode))
+    {
+        const auto factor = forgeTempoFactor ((int) mode->load(), bpm);
+        bpm *= factor;
+        if (ppq)
+            *ppq *= factor;
+    }
+
     // The hit sequencer starts from step 1 whenever the song starts.
     if (playing && ! wasPlaying)
         renderer.getEngine().restartHitSequence();

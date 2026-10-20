@@ -28,6 +28,23 @@ const double* forgeDelayTimeBeats()
     return beats;
 }
 
+const juce::StringArray& forgeTempoModeNames()
+{
+    static const juce::StringArray names { "Tempo: Auto", "Tempo: Song", "Tempo: x2", "Tempo: x1/2" };
+    return names;
+}
+
+double forgeTempoFactor (int tempoMode, double hostBpm)
+{
+    switch (tempoMode)
+    {
+        case 0:  return hostBpm < 100.0 ? 2.0 : 1.0;
+        case 2:  return 2.0;
+        case 3:  return 0.5;
+        default: return 1.0;
+    }
+}
+
 const juce::StringArray& forgeEqShapeNames()
 {
     static const juce::StringArray names { "Low Shelf", "Peak", "High Shelf" };
@@ -352,6 +369,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createForgeParameterLayout()
     addInt (layout, ForgeID::bendRange, "Bend Range", 1, 24, 12);
     addInt (layout, ForgeID::polyphony, "Polyphony", 1, ForgeEngine::maxVoices, 8);
     addFloat (layout, ForgeID::masterTune, "Master Tune", { -12.0f, 12.0f }, 0.0f, "st");
+    addChoice (layout, ForgeID::tempoMode, "Tempo Mode", forgeTempoModeNames(), 0);
 
     // FX rack.
     addBool (layout, ForgeID::hyperOn, "Hyper On", false);
