@@ -32,9 +32,13 @@ jobs:
           New-Item -ItemType Directory -Force "$out/Standalone", "$out/VST3" | Out-Null
           foreach ($t in "RiddimMachine", "RiddimForge", "RiddimMachineFX") {
             Copy-Item "build/${t}_artefacts/Release/Standalone/*.exe" "$out/Standalone/"
+            Copy-Item "build/${t}_artefacts/Release/Standalone/*.dll" "$out/Standalone/" -ErrorAction SilentlyContinue
             Copy-Item -Recurse "build/${t}_artefacts/Release/VST3/*.vst3" "$out/VST3/"
           }
-          Copy-Item "packaging/windows/README.txt" "$out/"
+          # Riddim Forge loads projectM (MilkDrop scenes) from next to its binaries.
+          if (-not (Test-Path "$out/Standalone/projectM-4.dll")) { Write-Output "::error::projectM-4.dll missing from the standalone"; exit 1 }
+          if (-not (Test-Path "$out/VST3/Riddim Forge.vst3/Contents/x86_64-win/projectM-4.dll")) { Write-Output "::error::projectM-4.dll missing from the VST3"; exit 1 }
+          Copy-Item "packaging/windows/README.txt", "packaging/THIRD_PARTY_NOTICES.txt" "$out/"
 
       - uses: actions/upload-artifact@v5
         with:

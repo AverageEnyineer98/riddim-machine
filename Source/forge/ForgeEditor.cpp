@@ -1,5 +1,6 @@
 #include "ForgeEditor.h"
 #include "ForgeMagic.h"
+#include "MilkScenes.h"
 #include "../Parameters.h"
 
 using namespace ForgeUI;
@@ -824,10 +825,37 @@ namespace
     };
 
     //==========================================================================
+    // The visual in its own resizable window, for a second screen or a big view on stage.
+    class BigVisualWindow : public juce::DocumentWindow
+    {
+    public:
+        BigVisualWindow (ForgeProcessor& p, std::function<void()> closed)
+            : DocumentWindow ("Riddim Forge Visual", juce::Colours::black, closeButton | maximiseButton),
+              onClosed (std::move (closed))
+        {
+            auto* v = new ForgeVisual (p);
+            v->setSize (960, 600);
+            view = v;
+            setUsingNativeTitleBar (true);
+            setContentOwned (v, true);
+            setResizable (true, false);
+            setResizeLimits (320, 200, 7680, 4320);
+            centreWithSize (getWidth(), getHeight());
+            setVisible (true);
+        }
+
+        void closeButtonPressed() override { onClosed(); }
+
+        ForgeVisual* view = nullptr;
+
+    private:
+        std::function<void()> onClosed;
+    };
+
     class VisualCard : public Card
     {
     public:
-        explicit VisualCard (ForgeProcessor& p) : Card ("Visual", magenta), view (p)
+        explicit VisualCard (ForgeProcessor& p) : Card ("Visual", magenta), view (p), processor (p)
         {
             caption.setFont (mono (10.0f));
             caption.setColour (juce::Label::textColourId, textDim);
@@ -835,20 +863,121 @@ namespace
             addAndMakeVisible (view);
             addAndMakeVisible (caption);
             view.onShapeChanged = [this] (const VisualDNA& dna) { caption.setText (dna.describe().toUpperCase(), juce::dontSendNotification); };
+            view.onSceneChanged = [this] { refreshButtons(); };
             caption.setText (view.getTargetDNA().describe().toUpperCase(), juce::dontSendNotification);
-            view.setTooltip ("This preset's own 3D form, built from its settings. Drag to orbit, scroll to zoom.");
+            view.setTooltip ("This preset's own 3D form, built from its settings, over a MilkDrop scene that follows "
+                             "the sound. Drag to orbit, scroll to zoom.");
+
+            for (auto* b : { &modeButton, &sceneButton, &bigButton })
+            {
+                b->setColour (juce::TextButton::textColourOffId, textDim);
+                addAndMakeVisible (*b);
+            }
+
+            const auto milkStatus = MilkLayer::getLibraryStatus();
+            const auto hasMilk = ForgeVisual::isMilkAvailable();
+            modeButton.setTooltip (hasMilk ? "Show the 3D form, the form over its MilkDrop scene (" + milkStatus + "), or the scene alone."
+                                           : "MilkDrop scenes are off: " + milkStatus + ".");
+            sceneButton.setTooltip ("The MilkDrop scene: AUTO picks one to suit each preset, or choose your own.");
+            bigButton.setTooltip ("Open the visual in its own window you can resize or move to another screen.");
+            modeButton.setEnabled (hasMilk);
+            sceneButton.setEnabled (hasMilk);
+            if (! hasMilk)
+                view.setMode (ForgeVisual::formOnly);
+
+            modeButton.onClick = [this]
+            {
+                setMode ((view.getMode() + 1) % ForgeVisual::numModes);
+            };
+
+            sceneButton.onClick = [this]
+            {
+                const auto next = view.getSceneChoice() + 1;
+                setScene (next >= MilkScenes::numScenes ? -1 : next);
+            };
+
+            bigButton.onClick = [this] { toggleBigWindow(); };
+            refreshButtons();
 
             layout = [this] (juce::Rectangle<int> area)
             {
+                auto buttons = area.removeFromBottom (18);
+                bigButton.setBounds (buttons.removeFromRight (48));
+                buttons.removeFromRight (4);
+                modeButton.setBounds (buttons.removeFromLeft (110));
+                buttons.removeFromLeft (4);
+                sceneButton.setBounds (buttons.removeFromLeft (120));
+                area.removeFromBottom (2);
                 caption.setBounds (area.removeFromBottom (16));
                 view.setBounds (area.withTrimmedBottom (2));
             };
         }
 
+        ~VisualCard() override { big.reset(); }
+
         ForgeVisual view;
 
     private:
+        void setMode (int mode)
+        {
+            view.setMode (mode);
+            if (big != nullptr)
+                big->view->setMode (mode);
+            refreshButtons();
+        }
+
+        void setScene (int scene)
+        {
+            view.setSceneChoice (scene);
+            if (big != nullptr)
+                big->view->setSceneChoice (scene);
+            refreshButtons();
+        }
+
+        void toggleBigWindow()
+        {
+            if (big != nullptr)
+            {
+                closeBigWindow();
+                return;
+            }
+
+            juce::Component::SafePointer<VisualCard> safe (this);
+            big = std::make_unique<BigVisualWindow> (processor, [safe]
+            {
+                // Called from the window's own close button, so delete it once that call returns.
+                juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->closeBigWindow(); });
+            });
+            big->view->setMode (view.getMode());
+            big->view->setSceneChoice (view.getSceneChoice());
+
+            // Both views read the same audio feed, so the small one rests while the big one shows.
+            view.setPaused (true);
+            refreshButtons();
+        }
+
+        void closeBigWindow()
+        {
+            big.reset();
+            view.setPaused (false);
+            refreshButtons();
+        }
+
+        void refreshButtons()
+        {
+            static const char* modeNames[] { "FORM", "FORM + MILK", "MILK" };
+            modeButton.setButtonText (modeNames[view.getMode()]);
+
+            const auto choice = view.getSceneChoice();
+            const auto scene = MilkScenes::getName (view.getCurrentScene()).toUpperCase();
+            sceneButton.setButtonText (choice < 0 ? "AUTO: " + scene : scene);
+            bigButton.setButtonText (big != nullptr ? "CLOSE" : "BIG");
+        }
+
+        ForgeProcessor& processor;
         juce::Label caption;
+        juce::TextButton modeButton, sceneButton, bigButton;
+        std::unique_ptr<BigVisualWindow> big;
     };
 
     //==========================================================================
