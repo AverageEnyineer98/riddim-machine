@@ -13,10 +13,11 @@ namespace ParamHelpers
     inline void addFloat (Layout& layout, const juce::String& id, const juce::String& name,
                           juce::NormalisableRange<float> range, float defaultValue, const juce::String& label = {})
     {
-        // Wide ranges (Hz, ms) read as whole numbers; 0..1 style ranges get two decimals.
-        const auto decimals = range.end - range.start > 50.0f ? 0 : 2;
-        auto toText = [decimals, label] (float value, int)
+        // About three significant figures: 0.94 ms, 12.5 ms, 440 Hz, 0.25.
+        auto toText = [label] (float value, int)
         {
+            const auto size = std::abs (value);
+            const auto decimals = size >= 100.0f ? 0 : (size >= 10.0f ? 1 : 2);
             return juce::String (value, decimals) + (label.isNotEmpty() ? " " + label : juce::String());
         };
 

@@ -3,11 +3,14 @@
 #include "ForgeProcessor.h"
 #include "ForgeLookAndFeel.h"
 #include "ForgeUI.h"
-#include "../Visualiser3D.h"
-#include "../ui/PresetBar.h"
+#include "ForgeVisual.h"
 
-// Header, status strip, 3D view, then one of three pages (SYNTH, MOD, FX), then the keyboard.
-class ForgeEditor : public juce::AudioProcessorEditor, private juce::Timer
+// Laid out like Serum: a header with the preset browser and Magic Sound, the OSC / FX /
+// MATRIX / GLOBAL pages, the preset's 3D form on the right, then the envelopes, LFOs and
+// macros along the bottom with their drag handles, and a keyboard. The whole window scales.
+class ForgeEditor : public juce::AudioProcessorEditor,
+                    public juce::DragAndDropContainer,
+                    private juce::Timer
 {
 public:
     explicit ForgeEditor (ForgeProcessor&);
@@ -16,23 +19,25 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    static constexpr int baseWidth = 1400, baseHeight = 880;
+
 private:
     void timerCallback() override;
     void showPage (int index);
+    void setZoom (float zoom);
 
     ForgeProcessor& processor;
     ForgeLookAndFeel lookAndFeel;
     juce::TooltipWindow tooltips { this, 600 };
 
-    PresetBar presetBar;
-    juce::TextButton tabs[3];
-    Visualiser3D visualiser;
-    std::unique_ptr<juce::Component> pages[3];
+    juce::Component content; // laid out at base size, scaled to the window
+    std::unique_ptr<juce::Component> header, pages[4], visualCard, envelopes, lfos, macros, playControls;
+    juce::TextButton tabs[4];
     juce::MidiKeyboardComponent keyboard;
+    ForgeVisual* visual = nullptr;
 
-    juce::Rectangle<int> statusArea;
-    float pulse = 0.0f;
-    int shownHit = -2;
+    int currentPage = 0;
+    float zoom = 1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ForgeEditor)
 };

@@ -82,7 +82,7 @@ namespace Choices
     inline const juce::StringArray lfoRates    { "1/1", "1/2", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32" };
     inline const double lfoCyclesPerBeat[]     { 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0 };
     inline const juce::StringArray warpModes   { "No Warp", "Sync", "Bend", "Mirror", "Quantize" };
-    inline const juce::StringArray distTypes   { "Soft Clip", "Hard Clip", "Wavefold", "Bitcrush" };
+    inline const juce::StringArray distTypes   { "Soft Clip", "Hard Clip", "Wavefold", "Bitcrush", "Diode", "Asym", "Sine Shaper", "X-Shaper", "Tube" };
 }
 
 // The synth: oscillators, filter, envelopes, LFO, voice settings and the FX chain.
