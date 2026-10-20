@@ -21,6 +21,35 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+# zstd (decompression only), for reading Serum 2 presets the user owns. Use a local copy
+# with -DZSTD_DIR=/path/to/zstd, otherwise fetch the release.
+if(NOT DEFINED ZSTD_DIR)
+    include(FetchContent)
+    FetchContent_Declare(zstd
+        URL https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+        URL_HASH SHA256=8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1)
+    FetchContent_GetProperties(zstd)
+    if(NOT zstd_POPULATED)
+        FetchContent_Populate(zstd)
+    endif()
+    set(ZSTD_DIR ${zstd_SOURCE_DIR})
+endif()
+
+add_library(forge_zstd STATIC
+    ${ZSTD_DIR}/lib/common/debug.c
+    ${ZSTD_DIR}/lib/common/entropy_common.c
+    ${ZSTD_DIR}/lib/common/error_private.c
+    ${ZSTD_DIR}/lib/common/fse_decompress.c
+    ${ZSTD_DIR}/lib/common/xxhash.c
+    ${ZSTD_DIR}/lib/common/zstd_common.c
+    ${ZSTD_DIR}/lib/decompress/huf_decompress.c
+    ${ZSTD_DIR}/lib/decompress/zstd_ddict.c
+    ${ZSTD_DIR}/lib/decompress/zstd_decompress.c
+    ${ZSTD_DIR}/lib/decompress/zstd_decompress_block.c)
+target_include_directories(forge_zstd PUBLIC ${ZSTD_DIR}/lib)
+target_compile_definitions(forge_zstd PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0 ZSTD_MULTITHREAD=0)
+set_target_properties(forge_zstd PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 set(RIDDIM_FORMATS VST3 Standalone)
 if(APPLE)
     list(APPEND RIDDIM_FORMATS AU)
@@ -129,7 +158,8 @@ set(FORGE_DSP_SOURCES
     Source/forge/ForgeParameters.cpp
     Source/forge/ForgePresets.cpp
     Source/forge/ForgeMagic.cpp
-    Source/forge/ForgeAudition.cpp)
+    Source/forge/ForgeAudition.cpp
+    Source/forge/SerumImport.cpp)
 
 target_sources(RiddimForge PRIVATE
     ${FORGE_DSP_SOURCES}
@@ -139,7 +169,7 @@ target_sources(RiddimForge PRIVATE
     Source/forge/ForgeEditor.cpp
     ${RIDDIM_SHARED_SOURCES})
 riddim_configure(RiddimForge)
-target_link_libraries(RiddimForge PRIVATE ForgeBinaryData)
+target_link_libraries(RiddimForge PRIVATE ForgeBinaryData forge_zstd)
 
 # Offline render check: plays riddim patterns through the engine and FX chain and writes WAVs.
 option(RIDDIM_BUILD_TESTS "Build the offline render test" OFF)
@@ -168,7 +198,7 @@ if(RIDDIM_BUILD_TESTS)
         Source/dsp/Wavetables.cpp)
     target_compile_definitions(ForgeRenderTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(ForgeRenderTest PRIVATE
-        ForgeBinaryData
+        ForgeBinaryData forge_zstd
         juce::juce_audio_formats juce::juce_audio_processors juce::juce_dsp juce::juce_gui_basics
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
@@ -185,7 +215,7 @@ if(RIDDIM_BUILD_TESTS)
         Source/dsp/Wavetables.cpp)
     target_compile_definitions(ForgePresetLab PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(ForgePresetLab PRIVATE
-        ForgeBinaryData
+        ForgeBinaryData forge_zstd
         juce::juce_audio_formats juce::juce_audio_processors juce::juce_dsp juce::juce_gui_basics
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 

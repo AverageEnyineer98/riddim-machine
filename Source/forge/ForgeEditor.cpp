@@ -933,7 +933,7 @@ namespace
             name.setButtonText (shownName);
             category = processor.presets.getCategory (processor.presets.getCurrentIndex());
             if (processor.presets.getCurrentIndex() < 0)
-                category = "Magic Sound (unsaved)";
+                category = (processor.presets.getCustomCategory() == "Imported" ? juce::String ("Imported from Serum 2") : juce::String ("Magic Sound")) + " (unsaved)";
             repaint();
         }
 
@@ -958,15 +958,59 @@ namespace
             juce::PopupMenu menu;
             for (const auto& cat : order)
                 menu.addSubMenu (cat + "  (" + juce::String (byCategory[cat].getNumItems()) + ")", byCategory[cat]);
+            menu.addSeparator();
+            menu.addItem (importSerumItem, "Import Serum 2 preset...");
 
             menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&name).withMaximumNumColumns (1),
                                 [safe = juce::Component::SafePointer<Header> (this)] (int result)
             {
-                if (safe != nullptr && result > 0)
+                if (safe == nullptr || result <= 0)
+                    return;
+                if (result == importSerumItem)
                 {
-                    safe->processor.presets.loadPreset (result - 1);
-                    safe->refresh();
+                    safe->chooseSerumPreset();
+                    return;
                 }
+                safe->processor.presets.loadPreset (result - 1);
+                safe->refresh();
+            });
+        }
+
+        // Converts a Serum 2 preset from the user's own library into the nearest Forge patch.
+        void chooseSerumPreset()
+        {
+            const auto documents = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+            auto start = documents.getChildFile ("Xfer/Serum 2 Presets/Presets");
+            if (! start.isDirectory())
+                start = documents.getChildFile ("Xfer/Serum Presets/Presets/User");
+            if (! start.isDirectory())
+                start = documents;
+
+            serumChooser = std::make_unique<juce::FileChooser> ("Import a Serum 2 preset", start, "*.SerumPreset");
+            serumChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                       [safe = juce::Component::SafePointer<Header> (this)] (const juce::FileChooser& chooser)
+            {
+                if (safe == nullptr || chooser.getResult() == juce::File())
+                    return;
+
+                safe->name.setButtonText ("Importing...");
+                safe->processor.importSerumPreset (chooser.getResult(), [safe] (const juce::String& error, const juce::StringArray& notes)
+                {
+                    if (safe == nullptr)
+                        return;
+                    safe->refresh();
+                    if (error.isNotEmpty())
+                    {
+                        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Import Serum 2 preset", error);
+                        return;
+                    }
+
+                    auto message = juce::String ("Imported as the nearest Forge sound. It is an approximation, so tweak to taste.");
+                    if (! notes.isEmpty())
+                        message << "\n\nNotes:\n- " << notes.joinIntoString ("\n- ");
+                    message << "\n\nPress SAVE to keep it.";
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Import Serum 2 preset", message);
+                });
             });
         }
 
@@ -991,6 +1035,8 @@ namespace
         juce::TextButton previous { "<" }, next { ">" }, name, save { "SAVE" }, magic;
         juce::ComboBox magicStyle;
         juce::String shownName, category;
+        std::unique_ptr<juce::FileChooser> serumChooser;
+        static constexpr int importSerumItem = 100000; // menu id, above any preset index
     };
 }
 

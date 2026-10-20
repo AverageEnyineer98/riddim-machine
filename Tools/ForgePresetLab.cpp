@@ -4,6 +4,7 @@
 //   ForgePresetLab <presets.json> <analysis.json> [--wav <folder>] [--bars N]
 //   ForgePresetLab --vectors <presets.json> <vectors.json>
 //   ForgePresetLab --magic <count> <presets.json> [style]
+//   ForgePresetLab --serum <wav folder> <file.SerumPreset>...
 //
 // --vectors skips rendering and writes every preset as normalised parameter values, plus
 // each parameter's kind (continuous, or the number of choices), for Magic Sound training.
@@ -19,6 +20,7 @@
 #include "../Source/forge/ForgeAudition.h"
 #include "../Source/PresetManager.h"
 #include "../Source/forge/ForgeMagic.h"
+#include "../Source/forge/SerumImport.h"
 
 using namespace ForgeAudition;
 
@@ -132,9 +134,50 @@ static int writeMagic (int count, const juce::File& out, const juce::String& sty
     return 0;
 }
 
+// Imports Serum 2 presets the way the plugin does, then plays and measures each one.
+static int importSerum (const juce::File& wavFolder, const juce::Array<juce::File>& files)
+{
+    juce::SharedResourcePointer<WavetableBank> bank;
+    wavFolder.createDirectory();
+    int failed = 0;
+
+    for (const auto& file : files)
+    {
+        SerumImport::Result result;
+        juce::String error;
+        if (! SerumImport::convert (file, wavFolder.getChildFile ("tables"), result, error))
+        {
+            std::printf ("%s: %s\n", file.getFileName().toRawUTF8(), error.toRawUTF8());
+            ++failed;
+            continue;
+        }
+
+        Host host;
+        std::vector<FactoryPreset> none;
+        PresetManager manager (host.parameters, none, "Forge Presets Lab");
+        manager.loadUnlisted (result.preset);
+        const auto audio = render (host.parameters, false, 2);
+        const auto features = analyse (audio);
+        writeWav (wavFolder.getChildFile (juce::File::createLegalFileName (result.preset.name) + ".wav"), audio);
+
+        std::printf ("%-40s %3d values  rms %6.1f dB  peak %.2f  %s\n", result.preset.name.toRawUTF8(), (int) result.preset.values.size(),
+                     features.rmsDb, features.peak, features.finite ? "" : "NOT FINITE");
+        for (const auto& line : result.notes)
+            std::printf ("    - %s\n", line.toRawUTF8());
+    }
+    return failed == 0 ? 0 : 1;
+}
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juce;
+    if (argc >= 4 && juce::String (argv[1]) == "--serum")
+    {
+        juce::Array<juce::File> files;
+        for (int i = 3; i < argc; ++i)
+            files.add (juce::File::getCurrentWorkingDirectory().getChildFile (argv[i]));
+        return importSerum (juce::File::getCurrentWorkingDirectory().getChildFile (argv[2]), files);
+    }
     if (argc >= 4 && juce::String (argv[1]) == "--magic")
         return writeMagic (juce::String (argv[2]).getIntValue(), juce::File::getCurrentWorkingDirectory().getChildFile (argv[3]),
                            argc > 4 ? juce::String (argv[4]) : juce::String());

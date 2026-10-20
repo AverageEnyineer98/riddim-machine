@@ -1,4 +1,5 @@
 #include "ForgeProcessor.h"
+#include "SerumImport.h"
 #include "ForgeEditor.h"
 #include "../Parameters.h"
 
@@ -107,6 +108,28 @@ void ForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 }
 
 //==============================================================================
+void ForgeProcessor::importSerumPreset (const juce::File& file, std::function<void (const juce::String&, const juce::StringArray&)> done)
+{
+    const auto tableFolder = presets.getUserPresetFolder().getSiblingFile ("Forge Imported Tables");
+
+    magicWorker.addJob ([this, file, tableFolder, done = std::move (done), alive = std::weak_ptr<bool> (aliveToken)]
+    {
+        SerumImport::Result result;
+        juce::String error;
+        SerumImport::convert (file, tableFolder, result, error);
+
+        juce::MessageManager::callAsync ([this, alive, result = std::move (result), error, done]
+        {
+            if (alive.expired())
+                return;
+            if (error.isEmpty())
+                presets.loadUnlisted (result.preset);
+            if (done)
+                done (error, result.notes);
+        });
+    });
+}
+
 bool ForgeProcessor::importWavetable (int oscillator, const juce::File& file, juce::String& error, bool select)
 {
     auto table = UserWavetable::load (file, error);

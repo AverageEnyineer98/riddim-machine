@@ -60,6 +60,7 @@ void PresetManager::loadUnlisted (const FactoryPreset& preset)
         state.state.setProperty (juce::Identifier (key), text, nullptr);
 
     setCustomName (preset.name);
+    customCategory = preset.category;
 }
 
 void PresetManager::resetToDefaults()

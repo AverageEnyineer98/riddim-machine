@@ -176,7 +176,7 @@ LfoCurve LfoCurve::fromString (const juce::String& text)
                                       values.size() > 2 ? juce::jlimit (-1.0f, 1.0f, values[2].getFloatValue()) : 0.0f });
     }
 
-    std::sort (curve.points.begin(), curve.points.end(), [] (const Point& a, const Point& b) { return a.x < b.x; });
+    std::stable_sort (curve.points.begin(), curve.points.end(), [] (const Point& a, const Point& b) { return a.x < b.x; }); // keeps vertical jumps in order
 
     if (curve.points.size() < 2)
         return LfoCurve();

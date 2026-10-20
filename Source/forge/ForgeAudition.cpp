@@ -26,6 +26,20 @@ juce::AudioBuffer<float> ForgeAudition::render (const juce::AudioProcessorValueT
     for (int l = 0; l < Forge::numLfos; ++l)
         renderer.setLfoCurve (l, Forge::LfoCurve::fromString (state.state.getProperty (ForgeID::lfoCurveProperty (l)).toString()));
 
+    // Wavetable files the sound names (imported tables), kept alive for the render.
+    std::vector<std::unique_ptr<UserWavetable>> tables;
+    for (int o = 0; o < Forge::numOscs; ++o)
+    {
+        const juce::File file (state.state.getProperty (juce::String ("importedTable") + ForgeID::oscLetter (o)).toString());
+        juce::String error;
+        if (file.existsAsFile())
+            if (auto table = UserWavetable::load (file, error))
+            {
+                renderer.setUserTable (o, table.get());
+                tables.push_back (std::move (table));
+            }
+    }
+
     const auto stepSamples = (int) (sampleRate * 60.0 / bpm / 3.0);
     const auto total = bars * stepsPerBar * stepSamples + (int) sampleRate / 2;
 

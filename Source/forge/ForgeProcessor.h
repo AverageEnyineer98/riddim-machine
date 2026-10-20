@@ -55,6 +55,11 @@ public:
     void makeMagicSound (const juce::String& style, std::function<void (const juce::String&)> done);
     bool isMakingMagic() const noexcept { return magicBusy.load(); }
 
+    // Message thread: converts a Serum 2 preset the user owns into a Forge patch in the
+    // background and loads it, then calls `done` with an error (empty on success) and notes
+    // on what couldn't be carried over.
+    void importSerumPreset (const juce::File&, std::function<void (const juce::String& error, const juce::StringArray& notes)> done);
+
     int getHitStep() const noexcept { return hitStep.load(); }
     float getLfoValue (int lfo) const noexcept { return renderer.getEngine().getLfoValue (lfo); }
     float getLfoPhase (int lfo) const noexcept { return renderer.getEngine().getLfoPhase (lfo); }

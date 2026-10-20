@@ -55,6 +55,13 @@ from scratch from publicly documented behaviour (no code or data from any other 
 - **347 factory presets** across 14 families (wobble, riddim, growl, tearout, yoi, screech,
   metal, robot, reese, sub, lead, pad, pluck, FX), all original and level-matched. User presets
   go to `Documents/Riddim Machine/Forge Presets`.
+- **Import Serum 2 presets** you own (preset menu > Import Serum 2 preset...). The `.SerumPreset`
+  file is unpacked (zstd + CBOR, read with [zstd](https://github.com/facebook/zstd), BSD licence) and
+  mapped to the nearest Forge settings: oscillators, warps, wavetable position, filters, envelopes,
+  drawn LFOs, macros and their names, up to 16 mod routings, the FX rack and voicing. Wavetables
+  come from your own Serum folders or from the preset itself, and the sound is level-matched.
+  It is an approximation, not a copy of Serum's sound, and a note lists what couldn't come across.
+  Nothing from Serum or any preset pack ships with the plugin.
 - **3D view tailored to each preset**: a supershape whose form, spikes, twist, colours and
   orbit rings come from the preset's own settings (and its name), reacting to notes and spectrum.
 - **Magic Sound**: a small neural network (conditional VAE trained only on our own presets,
@@ -68,6 +75,7 @@ from scratch from publicly documented behaviour (no code or data from any other 
     ForgePresetLab Presets/forge_factory.json lab.json        # render + measure every preset
     python3 Tools/make_forge_presets.py --levels lab.json --out Presets/forge_factory.json
     ForgePresetLab --magic 40 magic.json                      # test Magic Sound
+    ForgePresetLab --serum out_folder *.SerumPreset           # test Serum 2 import on your own presets
 
 `ForgePresetLab` is built with `-DRIDDIM_BUILD_TESTS=ON`. Retraining Magic Sound is described
 at the top of `Tools/train_magic.py`.
@@ -139,7 +147,7 @@ WAV next to the preset. Copy the preset into `Documents/Riddim Machine/Presets`.
 | --- | --- |
 | `Source/PluginProcessor.*`, `Source/PluginEditor.*` | The synth plugin |
 | `Source/fx/` | The FX plugin |
-| `Source/forge/` | Riddim Forge: engine, parameters, presets, UI, 3D view, Magic Sound |
+| `Source/forge/` | Riddim Forge: engine, parameters, presets, UI, 3D view, Magic Sound, Serum 2 import |
 | `Source/dsp/Wavetables.*` | Wavetable generation and band-limited playback |
 | `Source/dsp/RiddimEngine.*` | Voices, unison, FM, filter, envelopes, LFO, mono/glide |
 | `Source/dsp/RiddimFx.*` | The processing chain shared by both plugins |
