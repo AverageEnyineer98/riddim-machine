@@ -53,6 +53,38 @@ void ForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     // Merge on-screen keyboard presses into the host MIDI.
     keyboardState.processNextMidiBuffer (midi, 0, buffer.getNumSamples(), true);
 
+    // The on-screen wheels.
+    if (wheelsChanged.exchange (false))
+    {
+        midi.addEvent (juce::MidiMessage::pitchWheel (1, juce::jlimit (0, 16383, (int) std::round ((pitchWheel.load() + 1.0f) * 8191.5f))), 0);
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 1, juce::roundToInt (modWheel.load() * 127.0f)), 0);
+    }
+
+    // Transpose every note; a note-off always matches the note its key started.
+    if (const auto shift = transpose.load(); shift != 0 || std::any_of (playingNote.begin(), playingNote.end(), [] (int n) { return n != 0; }))
+    {
+        juce::MidiBuffer shifted;
+        for (const auto metadata : midi)
+        {
+            auto msg = metadata.getMessage();
+            if (msg.isNoteOn())
+            {
+                const auto key = msg.getNoteNumber();
+                const auto note = juce::jlimit (0, 127, key + shift);
+                playingNote[(size_t) key] = note - key;
+                msg.setNoteNumber (note);
+            }
+            else if (msg.isNoteOff())
+            {
+                const auto key = msg.getNoteNumber();
+                msg.setNoteNumber (juce::jlimit (0, 127, key + playingNote[(size_t) key]));
+                playingNote[(size_t) key] = 0;
+            }
+            shifted.addEvent (msg, metadata.samplePosition);
+        }
+        midi.swapWith (shifted);
+    }
+
     for (const auto metadata : midi)
     {
         const auto msg = metadata.getMessage();
@@ -65,16 +97,19 @@ void ForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
             visualFeed.allNotesOff();
     }
 
-    double bpm = 140.0;
+    double bpm = standaloneBpm.load();
     std::optional<double> ppq;
-    bool playing = false;
+    bool playing = false, hostTempo = false;
 
     if (auto* host = getPlayHead())
     {
         if (const auto position = host->getPosition())
         {
-            if (const auto hostBpm = position->getBpm())
+            if (const auto hostBpm = position->getBpm(); hostBpm && *hostBpm > 0.0)
+            {
                 bpm = *hostBpm;
+                hostTempo = true;
+            }
 
             playing = position->getIsPlaying();
             if (playing)
@@ -82,6 +117,8 @@ void ForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
                     ppq = *hostPpq;
         }
     }
+
+    usingHostTempo = hostTempo;
 
     // Half-time projects (e.g. 75 BPM) can play synced movement at riddim speed.
     if (auto* mode = parameters.getRawParameterValue (ForgeID::tempoMode))
@@ -250,6 +287,8 @@ void ForgeProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = parameters.copyState();
     state.setProperty ("preset", presets.getCurrentName(), nullptr);
+    state.setProperty ("standaloneBpm", standaloneBpm.load(), nullptr);
+    state.setProperty ("transpose", transpose.load(), nullptr);
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -264,6 +303,8 @@ void ForgeProcessor::setStateInformation (const void* data, int sizeInBytes)
             const auto tree = juce::ValueTree::fromXml (*xml);
             parameters.replaceState (tree);
             presets.setCurrentIndexFromName (tree.getProperty ("preset").toString());
+            setStandaloneBpm ((double) tree.getProperty ("standaloneBpm", 150.0));
+            setTranspose ((int) tree.getProperty ("transpose", 0));
 
             // replaceState swaps the tree without property callbacks, so refresh what hangs off it.
             for (int l = 0; l < Forge::numLfos; ++l)

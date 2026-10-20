@@ -126,9 +126,27 @@ public:
     }
 
     void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height, float sliderPos, float, float,
-                           juce::Slider::SliderStyle, juce::Slider& slider) override
+                           juce::Slider::SliderStyle style, juce::Slider& slider) override
     {
         using namespace ForgePalette;
+
+        if (style == juce::Slider::LinearVertical || style == juce::Slider::LinearBarVertical)
+        {
+            // A wheel: a rounded slot with a lit band from the rest point to the value.
+            const auto slot = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height);
+            g.setColour (ForgePalette::track);
+            g.fillRoundedRectangle (slot, 4.0f);
+
+            const auto bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
+            const auto from = bipolar ? slot.getCentreY() : slot.getBottom();
+            const auto colour = sliderPos <= from ? cyan : magenta;
+            g.setColour (colour.withAlpha (0.45f));
+            g.fillRoundedRectangle (juce::Rectangle<float>::leftTopRightBottom (slot.getX() + 2.0f, juce::jmin (from, sliderPos),
+                                                                                slot.getRight() - 2.0f, juce::jmax (from, sliderPos)), 3.0f);
+            g.setColour (juce::Colours::white);
+            g.fillRoundedRectangle (slot.getX() + 1.0f, sliderPos - 2.0f, slot.getWidth() - 2.0f, 4.0f, 2.0f);
+            return;
+        }
         const auto bar = juce::Rectangle<float> ((float) x, (float) y + (float) height * 0.5f - 3.0f, (float) width, 6.0f);
         g.setColour (ForgePalette::track);
         g.fillRoundedRectangle (bar, 3.0f);

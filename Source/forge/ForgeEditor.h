@@ -31,7 +31,7 @@ private:
     juce::TooltipWindow tooltips { this, 600 };
 
     juce::Component content; // laid out at base size, scaled to the window
-    std::unique_ptr<juce::Component> header, pages[4], visualCard, envelopes, lfos, macros;
+    std::unique_ptr<juce::Component> header, pages[4], visualCard, envelopes, lfos, macros, playControls;
     juce::TextButton tabs[4];
     juce::MidiKeyboardComponent keyboard;
     ForgeVisual* visual = nullptr;

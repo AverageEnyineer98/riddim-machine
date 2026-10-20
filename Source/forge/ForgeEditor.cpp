@@ -8,7 +8,7 @@ using namespace ForgePalette;
 namespace
 {
     constexpr int margin = 8, gap = 6;
-    constexpr int headerHeight = 54, tabHeight = 28, stripHeight = 236, keyboardHeight = 52;
+    constexpr int headerHeight = 54, tabHeight = 28, stripHeight = 230, keyboardHeight = 64;
     constexpr int visualWidth = 372;
     constexpr float numWhiteKeys = 43.0f; // C1 to C7
 
@@ -1046,6 +1046,102 @@ namespace
         std::unique_ptr<juce::FileChooser> serumChooser;
         static constexpr int importSerumItem = 100000; // menu id, above any preset index
     };
+
+    // Next to the keyboard: pitch and mod wheels, the tempo used when no DAW sets one (the
+    // standalone app), and a transpose for everything you play.
+    class PlayControls : public juce::Component, private juce::Timer
+    {
+    public:
+        explicit PlayControls (ForgeProcessor& p) : processor (p)
+        {
+            pitch.setRange (-1.0, 1.0);
+            pitch.setDoubleClickReturnValue (true, 0.0);
+            pitch.setTooltip ("Pitch wheel (springs back). Range: Bend on the GLOBAL page.");
+            pitch.onValueChange = [this] { processor.setPitchWheel ((float) pitch.getValue()); };
+            pitch.onDragEnd = [this] { pitch.setValue (0.0); };
+
+            mod.setRange (0.0, 1.0);
+            mod.setValue (processor.getModWheel(), juce::dontSendNotification);
+            mod.setTooltip ("Mod wheel: use it as a source in the MATRIX page");
+            mod.onValueChange = [this] { processor.setModWheel ((float) mod.getValue()); };
+
+            for (auto* wheel : { &pitch, &mod })
+            {
+                wheel->setSliderStyle (juce::Slider::LinearVertical);
+                wheel->setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+                wheel->setColour (juce::Slider::trackColourId, cyan.withAlpha (0.55f));
+                wheel->setColour (juce::Slider::backgroundColourId, juce::Colour (0xff0b1426));
+                addAndMakeVisible (*wheel);
+            }
+
+            bpm.setRange (40.0, 300.0, 1.0);
+            bpm.setValue (processor.getStandaloneBpm(), juce::dontSendNotification);
+            bpm.setTextValueSuffix (" BPM");
+            bpm.onValueChange = [this] { processor.setStandaloneBpm (bpm.getValue()); };
+
+            transpose.setRange (-36.0, 36.0, 1.0);
+            transpose.setValue (processor.getTranspose(), juce::dontSendNotification);
+            transpose.setTextValueSuffix (" st");
+            transpose.setTooltip ("Shifts every note you play, in semitones (12 = one octave)");
+            transpose.onValueChange = [this] { processor.setTranspose ((int) transpose.getValue()); };
+
+            for (auto* box : { &bpm, &transpose })
+            {
+                box->setSliderStyle (juce::Slider::IncDecButtons);
+                box->setTextBoxStyle (juce::Slider::TextBoxLeft, false, 70, 20);
+                box->setIncDecButtonsMode (juce::Slider::incDecButtonsDraggable_Vertical);
+                addAndMakeVisible (*box);
+            }
+
+            for (auto* label : { &pitchCaption, &modCaption, &bpmCaption, &transposeCaption })
+            {
+                label->setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                label->setColour (juce::Label::textColourId, textDim);
+                label->setJustificationType (juce::Justification::centred);
+                addAndMakeVisible (*label);
+            }
+            bpmCaption.setJustificationType (juce::Justification::centredLeft);
+            transposeCaption.setJustificationType (juce::Justification::centredLeft);
+
+            timerCallback();
+            startTimerHz (4);
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds();
+            auto wheels = area.removeFromLeft (52);
+            auto captions = wheels.removeFromBottom (12);
+            pitchCaption.setBounds (captions.removeFromLeft (26));
+            modCaption.setBounds (captions);
+            pitch.setBounds (wheels.removeFromLeft (26).reduced (3, 2));
+            mod.setBounds (wheels.reduced (3, 2));
+
+            area.removeFromLeft (6);
+            auto top = area.removeFromTop (area.getHeight() / 2).reduced (0, 2);
+            auto bottom = area.reduced (0, 2);
+            bpmCaption.setBounds (top.removeFromLeft (64));
+            bpm.setBounds (top);
+            transposeCaption.setBounds (bottom.removeFromLeft (64));
+            transpose.setBounds (bottom);
+        }
+
+    private:
+        void timerCallback() override
+        {
+            // In a DAW the song sets the tempo; the box only matters on its own.
+            const auto host = processor.isUsingHostTempo();
+            bpm.setEnabled (! host);
+            bpmCaption.setText (host ? "TEMPO (DAW)" : "TEMPO", juce::dontSendNotification);
+            bpm.setTooltip (host ? "Your DAW's song tempo is in charge" : "Tempo for synced LFOs, the hit sequencer and delay when playing on its own");
+            if (! mod.isMouseButtonDown())
+                mod.setValue (processor.getModWheel(), juce::dontSendNotification);
+        }
+
+        ForgeProcessor& processor;
+        juce::Slider pitch, mod, bpm, transpose;
+        juce::Label pitchCaption { {}, "PB" }, modCaption { {}, "MOD" }, bpmCaption { {}, "TEMPO" }, transposeCaption { {}, "TRANSPOSE" };
+    };
 }
 
 //==============================================================================
@@ -1077,7 +1173,8 @@ ForgeEditor::ForgeEditor (ForgeProcessor& p)
         content.addChildComponent (*pages[i]);
     }
 
-    for (auto* c : std::initializer_list<juce::Component*> { header.get(), visualCard.get(), envelopes.get(), lfos.get(), macros.get(), &keyboard })
+    playControls = std::make_unique<PlayControls> (p);
+    for (auto* c : std::initializer_list<juce::Component*> { header.get(), visualCard.get(), envelopes.get(), lfos.get(), macros.get(), playControls.get(), &keyboard })
         content.addAndMakeVisible (c);
 
     keyboard.setAvailableRange (24, 96);
@@ -1164,7 +1261,10 @@ void ForgeEditor::resized()
     area.reduce (margin, 0);
     area.removeFromTop (gap);
 
-    keyboard.setBounds (area.removeFromBottom (keyboardHeight));
+    auto keys = area.removeFromBottom (keyboardHeight);
+    playControls->setBounds (keys.removeFromLeft (232));
+    keys.removeFromLeft (gap);
+    keyboard.setBounds (keys);
     keyboard.setKeyWidth ((float) keyboard.getWidth() / numWhiteKeys);
     area.removeFromBottom (gap);
 

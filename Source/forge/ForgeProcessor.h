@@ -60,6 +60,17 @@ public:
     // on what couldn't be carried over.
     void importSerumPreset (const juce::File&, std::function<void (const juce::String& error, const juce::StringArray& notes)> done);
 
+    // Performance controls, kept with the session rather than presets. The tempo is used
+    // when nothing (the standalone app, or a host without a tempo) supplies one.
+    void setStandaloneBpm (double bpm)   { standaloneBpm = juce::jlimit (40.0, 300.0, bpm); }
+    double getStandaloneBpm() const      { return standaloneBpm.load(); }
+    bool isUsingHostTempo() const        { return usingHostTempo.load(); }
+    void setTranspose (int semitones)    { transpose = juce::jlimit (-36, 36, semitones); }
+    int getTranspose() const             { return transpose.load(); }
+    void setPitchWheel (float value)     { pitchWheel = juce::jlimit (-1.0f, 1.0f, value); wheelsChanged = true; } // -1..1
+    void setModWheel (float value)       { modWheel = juce::jlimit (0.0f, 1.0f, value); wheelsChanged = true; }   // 0..1
+    float getModWheel() const            { return modWheel.load(); }
+
     int getHitStep() const noexcept { return hitStep.load(); }
     float getLfoValue (int lfo) const noexcept { return renderer.getEngine().getLfoValue (lfo); }
     float getLfoPhase (int lfo) const noexcept { return renderer.getEngine().getLfoPhase (lfo); }
@@ -83,6 +94,12 @@ private:
     ForgeRenderer renderer { parameters };
     juce::AudioBuffer<float> monoScratch;
     bool wasPlaying = false;
+    std::atomic<double> standaloneBpm { 150.0 };
+    std::atomic<bool> usingHostTempo { false };
+    std::atomic<int> transpose { 0 };
+    std::atomic<float> pitchWheel { 0.0f }, modWheel { 0.0f };
+    std::atomic<bool> wheelsChanged { false };
+    std::array<int, 128> playingNote {}; // the transposed note each held key started, so note-offs match
     std::atomic<int> hitStep { -1 };
 
     // Every imported table stays alive until the plugin closes, so the audio thread
