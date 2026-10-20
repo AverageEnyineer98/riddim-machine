@@ -4,6 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 #include <juce_opengl/juce_opengl.h>
 #include "ForgeProcessor.h"
+#include "MilkLayer.h"
 
 // The shape a preset gets in the 3D view. Every field comes from the sound's own settings
 // (tables, warps, filter, distortion, LFOs, unison, macros) plus a seed from the preset's
@@ -27,6 +28,10 @@ struct VisualDNA
 // OpenGL view: the preset's supershape, lit and rimmed in its colours, breathing with LFO 1,
 // rippling with the output spectrum and flashing on every note, with orbit rings for unison
 // and a spectrum halo underneath. Drag to orbit, scroll to zoom, double-click to reset.
+//
+// Behind it, when libprojectM is installed, runs a MilkDrop scene (MilkScenes) fed with the
+// output audio and built from the same VisualDNA. The form is burnt into the scene's feedback
+// every frame, so it leaves trails that the scene swirls, zooms and folds.
 class ForgeVisual : public juce::Component, public juce::SettableTooltipClient, private juce::OpenGLRenderer, private juce::Timer
 {
 public:
@@ -35,6 +40,21 @@ public:
 
     const VisualDNA& getTargetDNA() const { return target; }
 
+    enum Mode { formOnly, formAndMilk, milkOnly, numModes };
+    void setMode (int newMode) { mode = juce::jlimit (0, numModes - 1, newMode); }
+    int getMode() const { return mode.load(); }
+
+    // A MilkScenes::Scene, or -1 to pick one to suit each preset.
+    void setSceneChoice (int scene);
+    int getSceneChoice() const { return sceneChoice; }
+    int getCurrentScene() const { return builtScene; }
+
+    // While paused (another view of the same plugin is showing) it draws nothing and leaves
+    // the audio feed to the other view.
+    void setPaused (bool shouldPause) { paused = shouldPause; }
+
+    static bool isMilkAvailable() { return MilkLayer::isLibraryLoaded(); }
+
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -42,6 +62,7 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     std::function<void (const VisualDNA&)> onShapeChanged;
+    std::function<void()> onSceneChanged;
 
 private:
     void timerCallback() override;
@@ -49,6 +70,12 @@ private:
     void renderOpenGL() override;
     void openGLContextClosing() override;
     void updateSpectrum();
+
+    struct FormFrame;
+    void drawForm (const FormFrame&, bool burnPass);
+    bool ensureMilk (int width, int height);
+    bool ensureBurnTarget (int width, int height);
+    void releaseBurnTarget();
 
     ForgeProcessor& processor;
     juce::OpenGLContext context;
@@ -60,12 +87,27 @@ private:
 
     std::atomic<float> yaw { 0.6f }, pitch { 0.35f }, distance { 4.6f };
     std::atomic<int> viewWidth { 1 }, viewHeight { 1 };
+    std::atomic<int> mode { formAndMilk };
+    std::atomic<bool> paused { false };
+
+    // Scene text is built on the message thread and picked up by the GL thread.
+    int sceneChoice = -1, builtScene = -1, stableTicks = 0;
+    VisualDNA builtDNA;
+    juce::String builtName;
+    juce::SpinLock sceneLock;
+    juce::String pendingScene;
+
     float dragYaw = 0.0f, dragPitch = 0.0f;
 
     // GL thread.
     std::unique_ptr<juce::OpenGLShaderProgram> shapeShader, lineShader;
     GLuint meshVao = 0, meshVbo = 0, meshIbo = 0, lineVao = 0, lineVbo = 0;
     int meshIndexCount = 0;
+    MilkLayer milk;
+    bool milkFailed = false, milkHasScene = false;
+    juce::String sceneOnScreen;
+    GLuint burnFbo = 0, burnTexture = 0, burnDepth = 0;
+    int burnWidth = 0, burnHeight = 0;
     double lastFrameMs = 0.0;
     float clock = 0.0f, spinAngle = 0.0f, flash = 0.0f, pulseSmoothed = 0.0f, level = 0.0f;
     std::array<float, 128> lastVelocity {};

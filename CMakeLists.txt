@@ -50,6 +50,11 @@ target_include_directories(forge_zstd PUBLIC ${ZSTD_DIR}/lib)
 target_compile_definitions(forge_zstd PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0 ZSTD_MULTITHREAD=0)
 set_target_properties(forge_zstd PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+option(RIDDIM_WITH_PROJECTM "Build libprojectM and ship it with Riddim Forge for the MilkDrop visuals" ON)
+if(RIDDIM_WITH_PROJECTM)
+    include(cmake/ProjectM.cmake)
+endif()
+
 set(RIDDIM_FORMATS VST3 Standalone)
 if(APPLE)
     list(APPEND RIDDIM_FORMATS AU)
@@ -167,9 +172,19 @@ target_sources(RiddimForge PRIVATE
     Source/forge/ForgeVisual.cpp
     Source/forge/ForgeProcessor.cpp
     Source/forge/ForgeEditor.cpp
+    Source/forge/MilkLayer.cpp
+    Source/forge/MilkScenes.cpp
     ${RIDDIM_SHARED_SOURCES})
 riddim_configure(RiddimForge)
 target_link_libraries(RiddimForge PRIVATE ForgeBinaryData forge_zstd)
+
+if(RIDDIM_WITH_PROJECTM)
+    foreach(format ${RIDDIM_FORMATS})
+        if(NOT format STREQUAL "AU") # macOS bundles come later
+            riddim_ship_projectm(RiddimForge_${format})
+        endif()
+    endforeach()
+endif()
 
 # Offline render check: plays riddim patterns through the engine and FX chain and writes WAVs.
 option(RIDDIM_BUILD_TESTS "Build the offline render test" OFF)
@@ -218,6 +233,26 @@ if(RIDDIM_BUILD_TESTS)
         ForgeBinaryData forge_zstd
         juce::juce_audio_formats juce::juce_audio_processors juce::juce_dsp juce::juce_gui_basics
         juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # Plays a riddim pattern through Forge presets in a window with the visual, for screenshots
+    # and clips of the 3D form and the MilkDrop scenes.
+    juce_add_gui_app(ForgeVisualDemo PRODUCT_NAME "ForgeVisualDemo")
+    target_sources(ForgeVisualDemo PRIVATE
+        Tests/ForgeVisualDemo.cpp
+        ${FORGE_DSP_SOURCES}
+        Source/forge/ForgeUI.cpp
+        Source/forge/ForgeVisual.cpp
+        Source/forge/ForgeProcessor.cpp
+        Source/forge/ForgeEditor.cpp
+        Source/forge/MilkLayer.cpp
+        Source/forge/MilkScenes.cpp
+        ${RIDDIM_SHARED_SOURCES})
+    target_compile_definitions(ForgeVisualDemo PRIVATE JucePlugin_Name="Riddim Forge")
+    riddim_configure(ForgeVisualDemo)
+    target_link_libraries(ForgeVisualDemo PRIVATE ForgeBinaryData forge_zstd)
+    if(RIDDIM_WITH_PROJECTM)
+        riddim_ship_projectm(ForgeVisualDemo)
+    endif()
 
     # Sound matching: searches for synth settings that sound like a reference clip.
     juce_add_console_app(RiddimMatch PRODUCT_NAME "RiddimMatch")

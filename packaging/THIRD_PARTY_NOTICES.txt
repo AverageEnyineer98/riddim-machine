@@ -1,0 +1,21 @@
+Third-party software in Riddim Forge
+====================================
+
+projectM (libprojectM)
+  Files: projectM-4.dll (Windows), libprojectM-4.so.4 (Linux), libprojectM-4.4.dylib (macOS),
+         next to the Riddim Forge plugin binary and standalone app.
+  Licence: GNU Lesser General Public License, version 2.1
+           https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+  Source: https://github.com/projectM-visualizer/projectm
+          commit 349b7cc2db312d47cef6be24c6856ced6643a385, built unmodified
+          (cmake/ProjectM.cmake in the Riddim Machine source shows how).
+  Riddim Forge loads this library at run time and works without it. You may replace it with
+  your own build of libprojectM 4.2 or newer under the same file name.
+
+  libprojectM includes, under their own permissive licences:
+    projectm-eval (MIT), hlslparser (MIT), GLM (MIT), glad (MIT), stb_image (MIT / public domain).
+
+The MilkDrop scenes Riddim Forge shows are original to Riddim Machine (Source/forge/MilkScenes.cpp).
+
+JUCE
+  https://juce.com, used under the JUCE licence (see README "Licence note").

@@ -64,6 +64,17 @@ from scratch from publicly documented behaviour (no code or data from any other 
   Nothing from Serum or any preset pack ships with the plugin.
 - **3D view tailored to each preset**: a supershape whose form, spikes, twist, colours and
   orbit rings come from the preset's own settings (and its name), reacting to notes and spectrum.
+- **MilkDrop scenes behind it (GPU)**: [projectM](https://github.com/projectM-visualizer/projectm),
+  the open-source MilkDrop engine, runs one of four original scenes (Tunnel, Grid, Storm, Burst)
+  on the graphics card, NVIDIA, AMD or Intel, through OpenGL 3.3. The scene is picked to suit the
+  preset and its colours, fold count, twist and grit come from the same settings as the 3D form,
+  so changing preset or turning a knob changes the scene (knob moves blend over once the sound
+  settles). projectM's own analysis of the output (bass, mid, treble, beats) drives the motion,
+  and the form's glowing rim is burnt into the scene's feedback every frame, so it leaves trails.
+  Buttons under the view switch FORM / FORM + MILK / MILK, pick a scene (or AUTO), and BIG opens
+  the visual in its own resizable window. Without libprojectM next to the plugin the view
+  shows the form alone. Pictures: `docs/riddim-forge-milk.png`, `docs/riddim-forge-milk-scenes.png`; clip with sound:
+  `docs/video/forge-visual-demo.mp4`.
 - **Magic Sound**: a small neural network (conditional VAE trained only on our own presets,
   `Tools/train_magic.py`) makes a new patch every click, optionally in a chosen style. Each
   click plays five candidates offline, keeps the one closest to real presets of that family,
@@ -148,6 +159,8 @@ WAV next to the preset. Copy the preset into `Documents/Riddim Machine/Presets`.
 | `Source/PluginProcessor.*`, `Source/PluginEditor.*` | The synth plugin |
 | `Source/fx/` | The FX plugin |
 | `Source/forge/` | Riddim Forge: engine, parameters, presets, UI, 3D view, Magic Sound, Serum 2 import |
+| `Source/forge/MilkLayer.*`, `MilkScenes.*` | projectM loader and the four MilkDrop scenes |
+| `cmake/ProjectM.cmake` | Builds libprojectM and copies it next to Riddim Forge |
 | `Source/dsp/Wavetables.*` | Wavetable generation and band-limited playback |
 | `Source/dsp/RiddimEngine.*` | Voices, unison, FM, filter, envelopes, LFO, mono/glide |
 | `Source/dsp/RiddimFx.*` | The processing chain shared by both plugins |
@@ -193,11 +206,23 @@ Outputs land in `build/RiddimMachine_artefacts/Release/`, `build/RiddimForge_art
 and `build/RiddimMachineFX_artefacts/Release/`. Copy the `.vst3` bundles into your plugin folder:
 Windows `C:\Program Files\Common Files\VST3`, macOS `~/Library/Audio/Plug-Ins/VST3`.
 
+Riddim Forge's MilkDrop scenes need libprojectM. CMake builds it from a pinned commit as a
+separate shared library (`projectM-4.dll`, `libprojectM-4.so.4`) and copies it next to the
+Forge VST3 binary and standalone app; keep it there when you copy the plugin. Turn it off with
+`-DRIDDIM_WITH_PROJECTM=OFF`. On Linux it also needs `libgl-dev`.
+
 To run the offline render check, configure with `-DRIDDIM_BUILD_TESTS=ON`, build, and run
 `RiddimRenderTest <output folder>`. It prints level, clipping and CPU use per pattern and
-writes the WAVs. The same option builds `ForgeRenderTest` and `RiddimMatch`.
+writes the WAVs. The same option builds `ForgeRenderTest`, `RiddimMatch` and `ForgeVisualDemo`
+(plays a riddim bar through chosen presets in a window, for screenshots and clips:
+`ForgeVisualDemo --presets 105,286,53,148 --seconds-each 6 --wav demo.wav`).
 
 ## Licence note
+
+libprojectM is LGPL-2.1. It ships unmodified as its own shared library that the plugin loads at
+run time, so anyone can swap in their own build, and its notice and source link are in
+`packaging/THIRD_PARTY_NOTICES.txt`, which goes out with every build. The four MilkDrop scenes
+are written for this project (`Source/forge/MilkScenes.cpp`); no third-party presets ship.
 
 JUCE is dual-licensed (AGPLv3 or a commercial JUCE licence). Selling a closed-source
 plugin needs a JUCE licence; the free Starter tier covers small revenue.

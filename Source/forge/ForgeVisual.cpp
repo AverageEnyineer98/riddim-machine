@@ -1,5 +1,6 @@
 #include "ForgeVisual.h"
 #include "../Parameters.h"
+#include "MilkScenes.h"
 
 using namespace juce::gl;
 
@@ -155,6 +156,7 @@ namespace
         uniform float metal;
         uniform float alpha;
         uniform float wirePass;
+        uniform float burnPass;
 
         void main()
         {
@@ -162,6 +164,15 @@ namespace
             vec3 toEye = normalize (eye - vWorld);
             if (dot (n, toEye) < 0.0)
                 n = -n;
+
+            // Only the glowing rim goes into the MilkDrop feedback, so trails stay bright lines
+            // instead of piling up into a solid blob.
+            if (burnPass > 0.5)
+            {
+                float edge = pow (1.0 - max (dot (n, toEye), 0.0), 3.0);
+                gl_FragColor = vec4 (mix (colourA, colourB, edge) * (0.6 + flash + vBand), edge * (0.35 + 0.4 * flash));
+                return;
+            }
 
             if (wirePass > 0.5)
             {
@@ -332,7 +343,8 @@ ForgeVisual::~ForgeVisual()
 
 void ForgeVisual::timerCallback()
 {
-    const auto dna = VisualDNA::fromState (processor.parameters, processor.presets.getCurrentName());
+    const auto name = processor.presets.getCurrentName();
+    const auto dna = VisualDNA::fromState (processor.parameters, name);
     const auto changed = std::memcmp (&dna, &target, sizeof (VisualDNA)) != 0;
     target = dna;
 
@@ -341,6 +353,35 @@ void ForgeVisual::timerCallback()
 
     if (changed && onShapeChanged)
         onShapeChanged (dna);
+
+    // A new preset or scene rebuilds the MilkDrop scene at once; knob moves wait until the
+    // sound has settled for a moment, so the scene blends over once rather than every tick.
+    stableTicks = changed ? 0 : stableTicks + 1;
+    const auto scene = sceneChoice >= 0 ? sceneChoice : MilkScenes::pickFor (dna);
+    const auto settled = stableTicks == 4 && std::memcmp (&dna, &builtDNA, sizeof (VisualDNA)) != 0;
+
+    if (scene != builtScene || name != builtName || settled)
+    {
+        auto text = MilkScenes::build (scene, dna);
+        {
+            const juce::SpinLock::ScopedLockType lock (sceneLock);
+            pendingScene.swapWith (text);
+        }
+
+        const auto sceneChanged = scene != builtScene;
+        builtScene = scene;
+        builtDNA = dna;
+        builtName = name;
+
+        if (sceneChanged && onSceneChanged)
+            onSceneChanged();
+    }
+}
+
+void ForgeVisual::setSceneChoice (int scene)
+{
+    sceneChoice = scene < 0 ? -1 : juce::jlimit (0, MilkScenes::numScenes - 1, scene);
+    timerCallback();
 }
 
 void ForgeVisual::resized()
@@ -430,6 +471,7 @@ void ForgeVisual::newOpenGLContextCreated()
     glBindVertexArray (0);
     lastFrameMs = juce::Time::getMillisecondCounterHiRes();
     firstFrame = true;
+    milkFailed = milkHasScene = false;
 }
 
 void ForgeVisual::openGLContextClosing()
@@ -440,6 +482,8 @@ void ForgeVisual::openGLContextClosing()
     glDeleteVertexArrays (1, &meshVao);
     glDeleteVertexArrays (1, &lineVao);
     meshVbo = meshIbo = lineVbo = meshVao = lineVao = 0;
+    milk.destroy();
+    releaseBurnTarget();
     shapeShader.reset();
     lineShader.reset();
 }
@@ -453,6 +497,8 @@ void ForgeVisual::updateSpectrum()
             b *= 0.9f;
         return;
     }
+
+    milk.addSamples (incoming.data(), got);
 
     const auto keep = juce::jmin (got, fftSize);
     std::move (history.begin() + keep, history.end(), history.begin());
@@ -482,12 +528,28 @@ void ForgeVisual::updateSpectrum()
     }
 }
 
+struct ForgeVisual::FormFrame
+{
+    VisualDNA dna;
+    Mat4 projection, view, model;
+    juce::Vector3D<float> eye;
+    juce::Colour colourA, colourB;
+    float norm = 1.0f;
+};
+
 void ForgeVisual::renderOpenGL()
 {
     const auto now = juce::Time::getMillisecondCounterHiRes();
     const auto dt = (float) juce::jlimit (0.0, 0.1, (now - lastFrameMs) * 0.001);
     lastFrameMs = now;
     clock += dt;
+
+    if (paused)
+    {
+        glClearColor (0.0f, 0.0f, 0.0f, 1.0f);
+        glClear (GL_COLOR_BUFFER_BIT);
+        return;
+    }
 
     // Morph towards the preset's shape.
     const auto morph = firstFrame ? 1.0f : 1.0f - std::exp (-dt * 4.0f);
@@ -519,20 +581,17 @@ void ForgeVisual::renderOpenGL()
     const auto scale = (float) context.getRenderingScale();
     const auto width = juce::roundToInt (scale * (float) viewWidth.load());
     const auto height = juce::roundToInt (scale * (float) viewHeight.load());
-    glViewport (0, 0, width, height);
 
-    const auto background = juce::Colour::fromHSV (dna.hueA, 0.6f, 0.05f + flash * 0.04f, 1.0f);
-    glClearColor (background.getFloatRed(), background.getFloatGreen(), background.getFloatBlue(), 1.0f);
-    glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glEnable (GL_DEPTH_TEST);
-    glEnable (GL_BLEND);
-    glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    GLint targetFbo = 0;
+    glGetIntegerv (GL_FRAMEBUFFER_BINDING, &targetFbo);
 
     const auto y = yaw.load(), p = pitch.load(), dist = distance.load();
-    const juce::Vector3D<float> eye { dist * std::cos (p) * std::sin (y), dist * std::sin (p), dist * std::cos (p) * std::cos (y) };
-    const auto projection = Mat4::perspective (0.75f, (float) width / (float) juce::jmax (1, height), 0.1f, 100.0f);
-    const auto view = Mat4::lookAt (eye, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f });
-    const auto model = Mat4::rotation (1, spinAngle) * Mat4::rotation (0, 0.25f * std::sin (clock * 0.3f + dna.seed * 6.0f));
+    FormFrame f;
+    f.dna = dna;
+    f.eye = { dist * std::cos (p) * std::sin (y), dist * std::sin (p), dist * std::cos (p) * std::cos (y) };
+    f.projection = Mat4::perspective (0.75f, (float) width / (float) juce::jmax (1, height), 0.1f, 100.0f);
+    f.view = Mat4::lookAt (f.eye, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f });
+    f.model = Mat4::rotation (1, spinAngle) * Mat4::rotation (0, 0.25f * std::sin (clock * 0.3f + dna.seed * 6.0f));
 
     // Size the shape so its widest point fits.
     auto max1 = 0.0f, max2 = 0.0f;
@@ -542,10 +601,158 @@ void ForgeVisual::renderOpenGL()
         max1 = juce::jmax (max1, superformula (phi, dna.m1, dna.n11, dna.n12, dna.n13));
         max2 = juce::jmax (max2, superformula (phi * 0.5f, dna.m2, dna.n21, dna.n22, dna.n23));
     }
-    const auto norm = 1.0f / juce::jmax (0.2f, max1 * max2);
+    f.norm = 1.0f / juce::jmax (0.2f, max1 * max2);
+    f.colourA = juce::Colour::fromHSV (dna.hueA, dna.saturation, 0.95f, 1.0f);
+    f.colourB = juce::Colour::fromHSV (dna.hueB, dna.saturation * 0.9f, 1.0f, 1.0f);
 
-    const auto colourA = juce::Colour::fromHSV (dna.hueA, dna.saturation, 0.95f, 1.0f);
-    const auto colourB = juce::Colour::fromHSV (dna.hueB, dna.saturation * 0.9f, 1.0f, 1.0f);
+    const auto viewMode = mode.load();
+    const auto withMilk = viewMode != formOnly && ensureMilk (width, height);
+
+    if (withMilk)
+    {
+        juce::String scene;
+        {
+            const juce::SpinLock::ScopedLockType lock (sceneLock);
+            scene.swapWith (pendingScene);
+        }
+
+        if (scene.isNotEmpty())
+        {
+            milk.setScene (scene, milkHasScene);
+            milkHasScene = true;
+            sceneOnScreen = scene;
+        }
+
+        // Burn the form into the scene's feedback, so the scene drags trails off it.
+        if (viewMode == formAndMilk && ensureBurnTarget (width, height))
+        {
+            glBindFramebuffer (GL_FRAMEBUFFER, burnFbo);
+            glViewport (0, 0, burnWidth, burnHeight);
+            glClearColor (0.0f, 0.0f, 0.0f, 0.0f);
+            glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            drawForm (f, true);
+            glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) targetFbo);
+            glDisable (GL_DEPTH_TEST);
+            glEnable (GL_BLEND);
+            glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            milk.burnIn (burnTexture, width, height);
+        }
+
+        milk.render ((GLuint) targetFbo, width, height);
+
+        // projectM leaves its own GL state behind; put back what the form needs.
+        glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) targetFbo);
+        glUseProgram (0);
+        glBindVertexArray (0);
+        glActiveTexture (GL_TEXTURE0);
+        glBindTexture (GL_TEXTURE_2D, 0);
+        glDisable (GL_SCISSOR_TEST);
+        glDisable (GL_CULL_FACE);
+        glDisable (GL_STENCIL_TEST);
+        glColorMask (GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask (GL_TRUE);
+        glViewport (0, 0, width, height);
+        glClear (GL_DEPTH_BUFFER_BIT);
+    }
+    else
+    {
+        glViewport (0, 0, width, height);
+        const auto background = juce::Colour::fromHSV (dna.hueA, 0.6f, 0.05f + flash * 0.04f, 1.0f);
+        glClearColor (background.getFloatRed(), background.getFloatGreen(), background.getFloatBlue(), 1.0f);
+        glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
+
+    if (viewMode != milkOnly || ! withMilk)
+        drawForm (f, false);
+
+    glBindVertexArray (0);
+}
+
+bool ForgeVisual::ensureMilk (int width, int height)
+{
+    if (milk.isReady())
+        return true;
+
+    if (milkFailed)
+        return false;
+
+    milkFailed = ! milk.create (width, height);
+    milkHasScene = false;
+
+    // A recreated context (e.g. the window moved to another screen) picks up where it left off.
+    if (! milkFailed && sceneOnScreen.isNotEmpty())
+    {
+        milk.setScene (sceneOnScreen, false);
+        milkHasScene = true;
+    }
+
+    return ! milkFailed;
+}
+
+bool ForgeVisual::ensureBurnTarget (int width, int height)
+{
+    if (burnFbo != 0 && width == burnWidth && height == burnHeight)
+        return true;
+
+    releaseBurnTarget();
+    glGenFramebuffers (1, &burnFbo);
+    glGenTextures (1, &burnTexture);
+    glGenRenderbuffers (1, &burnDepth);
+
+    glBindTexture (GL_TEXTURE_2D, burnTexture);
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture (GL_TEXTURE_2D, 0);
+
+    glBindRenderbuffer (GL_RENDERBUFFER, burnDepth);
+    glRenderbufferStorage (GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glBindRenderbuffer (GL_RENDERBUFFER, 0);
+
+    GLint previous = 0;
+    glGetIntegerv (GL_FRAMEBUFFER_BINDING, &previous);
+    glBindFramebuffer (GL_FRAMEBUFFER, burnFbo);
+    glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, burnTexture, 0);
+    glFramebufferRenderbuffer (GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, burnDepth);
+    const auto complete = glCheckFramebufferStatus (GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer (GL_FRAMEBUFFER, (GLuint) previous);
+
+    if (! complete)
+    {
+        releaseBurnTarget();
+        return false;
+    }
+
+    burnWidth = width;
+    burnHeight = height;
+    return true;
+}
+
+void ForgeVisual::releaseBurnTarget()
+{
+    if (burnFbo != 0)      glDeleteFramebuffers (1, &burnFbo);
+    if (burnTexture != 0)  glDeleteTextures (1, &burnTexture);
+    if (burnDepth != 0)    glDeleteRenderbuffers (1, &burnDepth);
+    burnFbo = burnTexture = burnDepth = 0;
+    burnWidth = burnHeight = 0;
+}
+
+void ForgeVisual::drawForm (const FormFrame& f, bool burn)
+{
+    const auto& dna = f.dna;
+    const auto& projection = f.projection;
+    const auto& view = f.view;
+    const auto& model = f.model;
+    const auto& eye = f.eye;
+    const auto& colourA = f.colourA;
+    const auto& colourB = f.colourB;
+    const auto norm = f.norm;
+
+    glEnable (GL_DEPTH_TEST);
+    glEnable (GL_BLEND);
+    glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     if (shapeShader != nullptr)
     {
@@ -570,13 +777,14 @@ void ForgeVisual::renderOpenGL()
 
         glBindVertexArray (meshVao);
 
+        shapeShader->setUniform ("burnPass", burn ? 1.0f : 0.0f);
         shapeShader->setUniform ("inflate", 1.0f);
         shapeShader->setUniform ("wirePass", 0.0f);
         shapeShader->setUniform ("alpha", 1.0f);
         glDrawElements (GL_TRIANGLES, meshIndexCount, GL_UNSIGNED_INT, nullptr);
 
         // A wire cage just outside the surface, denser with more unison.
-        if (dna.wire > 0.05f)
+        if (dna.wire > 0.05f && ! burn)
         {
             glDepthMask (GL_FALSE);
             glPolygonMode (GL_FRONT_AND_BACK, GL_LINE);
